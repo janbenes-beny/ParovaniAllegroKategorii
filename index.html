@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Párování kategorií - BAS</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Načtení produktů z BaseLinker</h1>
+    <p class="sub">
+      Zadejte API token a načtěte produkty. Tabulka ukáže: ID, Název, Heureka ID kategorie, celý název Heureka kategorie, Obrázek a Popis.
+    </p>
+
+    <section class="card">
+      <label for="apiToken">BaseLinker API token (X-BLToken)</label>
+      <input id="apiToken" type="password" placeholder="Váš token" autocomplete="off" />
+      <div class="row">
+        <label for="inventoryId">Inventory ID</label>
+        <input id="inventoryId" type="number" placeholder="Např. 5257" />
+      </div>
+      <button id="btnLoad" type="button">Načíst produkty</button>
+      <div id="msg" class="msg hidden"></div>
+    </section>
+
+    <section class="card hidden" id="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Název</th>
+            <th>Heureka ID kategorie</th>
+            <th>Celý název Heureka kategorie</th>
+            <th>Obrázek</th>
+            <th>Popis</th>
+          </tr>
+        </thead>
+        <tbody id="productsTbody"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
