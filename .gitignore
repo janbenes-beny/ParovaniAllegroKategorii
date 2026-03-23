@@ -1,0 +1,8 @@
+# Local Netlify folder
+.netlify
+
+# Local dependencies / generated data
+node_modules/
+categories-tree.json
+categories.txt
+allegro-kategorie.html

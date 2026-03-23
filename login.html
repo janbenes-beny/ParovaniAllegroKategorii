@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="cs">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BaseLinker přihlášení</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>BaseLinker přihlášení</h1>
+      <p class="sub">Vložte API token (X-BLToken). Uložíme ho do sessionStorage.</p>
+
+      <section class="card">
+        <label for="apiToken">BaseLinker API token (X-BLToken)</label>
+        <input id="apiToken" type="password" placeholder="Váš token" autocomplete="off" />
+
+        <div class="row" style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button id="btnLoginBaseLinker" type="button">Přihlásit</button>
+          <button id="btnCancelBaseLinkerLogin" type="button" style="background:#6c757d;">Zrušit</button>
+        </div>
+
+        <div id="loginMsg" class="msg hidden"></div>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        const TOKEN_STORAGE = "bl_token_local";
+        const apiTokenInput = document.getElementById("apiToken");
+        const btnLogin = document.getElementById("btnLoginBaseLinker");
+        const btnCancel = document.getElementById("btnCancelBaseLinkerLogin");
+        const loginMsgEl = document.getElementById("loginMsg");
+
+        function showMsg(text, type) {
+          loginMsgEl.textContent = text || "";
+          loginMsgEl.className = "msg " + (type || "");
+          loginMsgEl.classList.toggle("hidden", !text);
+        }
+
+        if (btnLogin) {
+          btnLogin.addEventListener("click", function () {
+            const token = apiTokenInput ? (apiTokenInput.value || "").trim() : "";
+            if (!token) {
+              showMsg("Zadejte BaseLinker API token.", "error");
+              return;
+            }
+
+            sessionStorage.setItem(TOKEN_STORAGE, token);
+            window.location.href = "index.html";
+          });
+        }
+
+        if (btnCancel) {
+          btnCancel.addEventListener("click", function () {
+            window.location.href = "index.html";
+          });
+        }
+
+        if (apiTokenInput && sessionStorage.getItem(TOKEN_STORAGE)) {
+          apiTokenInput.value = sessionStorage.getItem(TOKEN_STORAGE);
+        }
+      })();
+    </script>
+  </body>
+</html>
+

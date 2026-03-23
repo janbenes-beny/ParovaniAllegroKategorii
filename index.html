@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Párování kategorií - BAS</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Načtení produktů z BaseLinker</h1>
+    <p class="sub">
+      Přihlaste se do BaseLinker a načtěte produkty. Tabulka ukáže: ID, Název, Heureka ID kategorie, celý název Heureka kategorie, Obrázek a Popis.
+    </p>
+
+    <section class="card">
+      <input id="inventoryId" type="hidden" value="5257" />
+
+      <div class="row" style="margin-top: 0;">
+        <div id="baseLinkerStatus" style="color:#555; font-weight:600;">Nejste přihlášen.</div>
+      </div>
+
+      <button id="btnOpenBaseLinkerLogin" type="button">Přihlásit BaseLinker</button>
+      <button id="btnLoad" type="button" disabled>Načíst produkty</button>
+      <div id="msg" class="msg hidden"></div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin: 0 0 8px;">Načtení stromu kategorií Kaufland</h2>
+      <p class="sub" style="margin-top: 0; margin-bottom: 14px;">
+        Zadejte `client key` a `secret key`. Aplikace stáhne kompletní strom kategorií (ID, celá cesta a koncový název).
+      </p>
+
+      <label for="kauflandClientKey">Kaufland Client Key</label>
+      <input id="kauflandClientKey" type="password" placeholder="Váš client key" autocomplete="off" />
+
+      <label for="kauflandSecretKey">Kaufland Secret Key</label>
+      <input id="kauflandSecretKey" type="password" placeholder="Váš secret key" autocomplete="off" />
+
+      <div class="row">
+        <label for="kauflandStorefront">Storefront</label>
+        <input id="kauflandStorefront" type="text" placeholder="např. cz" value="cz" autocomplete="off" />
+      </div>
+
+      <div class="row">
+        <label for="kauflandLocale">Locale</label>
+        <input id="kauflandLocale" type="text" placeholder="např. cs-CZ" value="cs-CZ" autocomplete="off" />
+      </div>
+
+      <div class="row">
+        <label for="kauflandMaxCategories">Batch kategorií (v jedné iteraci)</label>
+        <input id="kauflandMaxCategories" type="number" placeholder="např. 100" value="100" autocomplete="off" />
+      </div>
+
+      <button id="btnLoadKauflandCategories" type="button">Načíst strom kategorií</button>
+
+      <pre id="kauflandCategoriesOutput" class="desc hidden"></pre>
+
+      <div class="row" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px;">
+        <button id="btnSaveKauflandTree" type="button" disabled>Uložit strom</button>
+        <button id="btnDownloadKauflandTree" type="button" disabled>Stáhnout JSON</button>
+        <button id="btnLoadSavedKauflandTree" type="button">Načíst uložené</button>
+        <button id="btnClearSavedKauflandTree" type="button">Vymazat uložené</button>
+        <button id="btnAddCategoriesToBaseLinkerTest" type="button" disabled>Přidat do BaseLinkeru (test)</button>
+        <label for="btnAddCategoriesTestCount" style="margin:0; font-weight:600; color:#555;">Test (počet kategorií)</label>
+        <input id="btnAddCategoriesTestCount" type="number" value="5" min="1" style="width: 90px;" />
+        <button id="btnAddCategoriesToBaseLinkerAll" type="button" disabled>Přidat vše do BaseLinkeru</button>
+      </div>
+
+      <pre id="baseLinkerAddLog" class="desc hidden" style="margin-top: 14px;"></pre>
+    </section>
+
+    <section class="card hidden" id="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Název</th>
+            <th>Heureka ID kategorie</th>
+            <th>Celý název Heureka kategorie</th>
+            <th>Obrázek</th>
+            <th>Popis</th>
+            <th>Kaufland odhad</th>
+          </tr>
+        </thead>
+        <tbody id="productsTbody"></tbody>
+      </table>
+    </section>
+
+    <div id="kauflandDecideTestModal" class="modal hidden">
+      <div class="modal-content">
+        <h2 style="margin: 0 0 10px;">Kaufland decide test</h2>
+        <button id="btnCloseKauflandDecideTestModal" type="button" style="margin-bottom: 10px; background:#6c757d;">Zavřít</button>
+        <pre id="kauflandDecideTestOutput" class="desc"></pre>
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
