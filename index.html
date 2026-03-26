@@ -21,13 +21,14 @@
       </div>
 
       <button id="btnOpenBaseLinkerLogin" type="button">Přihlásit BaseLinker</button>
-      <button id="btnLoad" type="button" disabled>Načíst produkty</button>
+      <button id="btnLoad" type="button" disabled>Načíst prvních 50 produktů pro testování</button>
+      <button id="btnLoadAll" type="button" disabled>Načíst všechny produkty</button>
       <div id="msg" class="msg hidden"></div>
     </section>
 
     <details class="card collapsible-card">
       <summary>
-        <span>AI výběrčí</span>
+        <span>Nastavení AI pro odhad kategorie</span>
         <span class="sub" style="margin: 0;">Nastavení providera, modelu a API klíče</span>
       </summary>
       <div class="collapsible-content">
@@ -96,9 +97,26 @@
     </details>
 
     <section class="card hidden" id="tableWrap">
+      <div id="batchControls" class="batchControls">
+        <div class="row" style="margin-top: 0;">
+          <label for="extraFieldKey">Extra field pro zápis kategorie do Basu (zatím jen Kaufland)</label>
+          <select id="extraFieldKey">
+            <option value="extra_field_10902" selected>Kaufland: extra_field_10902</option>
+          </select>
+        </div>
+
+        <div class="row" style="display:flex; gap:10px; flex-wrap:wrap;">
+          <button id="btnAiEstimateSelected" type="button" disabled>AI odhad pro vybrané</button>
+          <button id="btnPushSelectedToBas" type="button" disabled>Ulož ID do Base pro vybrané</button>
+        </div>
+      </div>
+
       <table>
         <thead>
           <tr>
+            <th style="width:56px;">
+              <input id="selectAllProducts" type="checkbox" />
+            </th>
             <th>ID</th>
             <th>Název</th>
             <th>Heureka ID kategorie</th>
@@ -106,11 +124,20 @@
             <th>Obrázek</th>
             <th>Popis</th>
             <th>Kaufland odhad</th>
-            <th>ID odhadnuté kategorie</th>
+            <th>ID odhadnuté Kaufland kategorie</th>
+            <th>Akce Base</th>
           </tr>
         </thead>
         <tbody id="productsTbody"></tbody>
       </table>
+
+      <div id="paginationControls" class="paginationControls" style="display: none;">
+        <div class="row" style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <button id="btnPrevPage" type="button" disabled>Předchozí</button>
+          <span id="pageInfo" class="sub">Stránka 1/1</span>
+          <button id="btnNextPage" type="button" disabled>Další</button>
+        </div>
+      </div>
     </section>
 
     <div id="kauflandDecideTestModal" class="modal hidden">

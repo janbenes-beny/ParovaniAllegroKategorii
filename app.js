@@ -5,6 +5,7 @@
   const MAX_PRODUCTS_TO_SHOW = 50;
 
   const btnLoad = document.getElementById("btnLoad");
+  const btnLoadAll = document.getElementById("btnLoadAll");
   const msgEl = document.getElementById("msg");
   const tableWrap = document.getElementById("tableWrap");
   const tbody = document.getElementById("productsTbody");
@@ -23,6 +24,11 @@
   const btnLoginBaseLinker = document.getElementById("btnLoginBaseLinker");
   const btnCancelBaseLinkerLogin = document.getElementById("btnCancelBaseLinkerLogin");
   const loginMsgEl = document.getElementById("loginMsg");
+
+  const paginationControls = document.getElementById("paginationControls");
+  const btnPrevPage = document.getElementById("btnPrevPage");
+  const btnNextPage = document.getElementById("btnNextPage");
+  const pageInfoEl = document.getElementById("pageInfo");
 
   function showLoginMsg(text, type) {
     if (!loginMsgEl) return;
@@ -219,6 +225,29 @@
   }
 
   let kauflandProductsById = new Map();
+  const PAGE_SIZE = MAX_PRODUCTS_TO_SHOW;
+  let allProductIds = [];
+  let currentPage = 1;
+  let totalPages = 1;
+  let heurekaCategoryMapCache = new Map();
+  let isLoadingProducts = false;
+
+  function updatePaginationUi() {
+    if (!paginationControls || !btnPrevPage || !btnNextPage || !pageInfoEl) return;
+    pageInfoEl.textContent = "Stránka " + currentPage + "/" + totalPages;
+    btnPrevPage.disabled = currentPage <= 1;
+    btnNextPage.disabled = currentPage >= totalPages;
+    paginationControls.style.display = totalPages > 1 ? "block" : "none";
+  }
+
+  function resetSelectionUi() {
+    if (selectAllProductsEl) {
+      selectAllProductsEl.checked = false;
+      selectAllProductsEl.indeterminate = false;
+    }
+    if (btnAiEstimateSelected) btnAiEstimateSelected.disabled = true;
+    if (btnPushSelectedToBas) btnPushSelectedToBas.disabled = true;
+  }
 
   function renderRows(rows) {
     tbody.innerHTML = "";
@@ -226,6 +255,7 @@
     rows.forEach((row) => {
       const tr = document.createElement("tr");
       tr.innerHTML =
+        '<td><input type="checkbox" class="productRowCheck" data-product-id="' + escapeHtml(row.id) + '"></td>' +
         "<td>" + escapeHtml(row.id) + "</td>" +
         "<td>" + escapeHtml(row.name || "—") + "</td>" +
         "<td>" + escapeHtml(row.heurekaCategoryId || "—") + "</td>" +
@@ -236,7 +266,13 @@
         '<button type="button" class="btnAiMatchCategory" data-product-id="' + escapeHtml(row.id) + '">AI odhad kategorie</button>' +
         '<div class="aiResult desc" style="margin-top: 6px;">—</div>' +
         "</td>" +
-        '<td class="aiResultId">—</td>';
+        '<td class="aiResultId">—</td>' +
+        '<td>' +
+        '<button type="button" class="btnPushEstimatedCategoryToBas" data-product-id="' +
+        escapeHtml(row.id) +
+        '">Ulož ID do Basu</button>' +
+        '<div class="basSyncStatus desc" style="margin-top: 6px;">—</div>' +
+        "</td>";
 
       const imageCell = tr.querySelector(".image-col");
       if (row.imageUrl) {
@@ -263,7 +299,59 @@
     });
   }
 
-  async function loadProducts() {
+  async function renderPage(inventoryId) {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    const pageIds = allProductIds.slice(start, start + PAGE_SIZE);
+    if (!pageIds.length) return;
+
+    // Fetch only the items shown on the page.
+    const products = await fetchProductsDataByIds(inventoryId, pageIds);
+    const rows = [];
+
+    pageIds.forEach((productId) => {
+      const product = products[productId];
+      if (!product || typeof product !== "object") return;
+
+      const textFields = product.text_fields || {};
+      const productName = textFields.name || textFields["name|cs"] || product.name || "";
+      const descriptionHtml = getDescriptionFromTextFields(textFields);
+      const description = stripHtml(descriptionHtml);
+
+      const manufacturer =
+        (typeof textFields.manufacturer === "string" && textFields.manufacturer.trim()
+          ? textFields.manufacturer.trim()
+          : typeof textFields["manufacturer|cs"] === "string" && textFields["manufacturer|cs"].trim()
+            ? textFields["manufacturer|cs"].trim()
+            : typeof textFields["brand"] === "string" && textFields.brand.trim()
+              ? textFields.brand.trim()
+              : typeof textFields["producer"] === "string" && textFields.producer.trim()
+                ? textFields.producer.trim()
+                : product.manufacturer && typeof product.manufacturer === "string" ? product.manufacturer.trim() : "") || "";
+
+      const categoryId = product.category_id != null ? String(product.category_id) : "";
+      const heurekaCategoryName = heurekaCategoryMapCache.get(categoryId) || "—";
+      const imageUrl = getMainImage(product);
+
+      rows.push({
+        id: String(product.id || productId),
+        name: productName || "—",
+        heurekaCategoryId: categoryId || "—",
+        heurekaCategoryName: heurekaCategoryName || "—",
+        imageUrl: imageUrl,
+        description: description || "—",
+        manufacturer: manufacturer || "",
+      });
+    });
+
+    renderRows(rows);
+    kauflandProductsById = new Map(rows.map((r) => [String(r.id), r]));
+
+    resetSelectionUi();
+    updateSelectAllState();
+    updatePaginationUi();
+  }
+
+  async function loadProducts(maxProducts) {
     const inventoryId = getInventoryId();
     if (!inventoryId || Number.isNaN(inventoryId)) {
       showMsg("Zadejte platné Inventory ID.", "error");
@@ -274,68 +362,94 @@
       return;
     }
 
+    if (isLoadingProducts) return;
+    isLoadingProducts = true;
+
     btnLoad.disabled = true;
-    showMsg("Načítám data z BaseLinker...", "info");
+    if (btnLoadAll) btnLoadAll.disabled = true;
+    if (btnPrevPage) btnPrevPage.disabled = true;
+    if (btnNextPage) btnNextPage.disabled = true;
+
+    showMsg("Načítám seznam produktů z BaseLinker...", "info");
     tableWrap.classList.add("hidden");
 
     try {
-      const productIds = await fetchAllProductIds(inventoryId, MAX_PRODUCTS_TO_SHOW);
-      const products = await fetchProductsDataByIds(inventoryId, productIds);
-      let categoryMap = new Map();
+      allProductIds = await fetchAllProductIds(inventoryId, maxProducts);
+      currentPage = 1;
+      totalPages = Math.max(1, Math.ceil(allProductIds.length / PAGE_SIZE));
+
+      heurekaCategoryMapCache = new Map();
       try {
         const categoriesData = await callBaseLinker("getInventoryCategories", { inventory_id: inventoryId });
-        categoryMap = mapCategories(categoriesData.categories || categoriesData);
+        heurekaCategoryMapCache = mapCategories(categoriesData.categories || categoriesData);
       } catch (categoryError) {
         // Pokud categories endpoint není dostupný, zobrazíme aspoň ID kategorie.
-        categoryMap = new Map();
+        heurekaCategoryMapCache = new Map();
       }
-      const rows = [];
 
-      Object.keys(products).forEach((productId) => {
-        const product = products[productId];
-        if (!product || typeof product !== "object") return;
-
-        const textFields = product.text_fields || {};
-        const productName = textFields.name || textFields["name|cs"] || product.name || "";
-        const descriptionHtml = getDescriptionFromTextFields(textFields);
-        const description = stripHtml(descriptionHtml);
-        const manufacturer =
-          (typeof textFields.manufacturer === "string" && textFields.manufacturer.trim()
-            ? textFields.manufacturer.trim()
-            : typeof textFields["manufacturer|cs"] === "string" && textFields["manufacturer|cs"].trim()
-              ? textFields["manufacturer|cs"].trim()
-              : typeof textFields["brand"] === "string" && textFields.brand.trim()
-                ? textFields.brand.trim()
-                : typeof textFields["producer"] === "string" && textFields.producer.trim()
-                  ? textFields.producer.trim()
-                  : product.manufacturer && typeof product.manufacturer === "string" ? product.manufacturer.trim() : "") || "";
-        const categoryId = product.category_id != null ? String(product.category_id) : "";
-        const heurekaCategoryName = categoryMap.get(categoryId) || "—";
-        const imageUrl = getMainImage(product);
-
-        rows.push({
-          id: String(product.id || productId),
-          name: productName || "—",
-          heurekaCategoryId: categoryId || "—",
-          heurekaCategoryName: heurekaCategoryName || "—",
-          imageUrl: imageUrl,
-          description: description || "—",
-          manufacturer: manufacturer || "",
-        });
-      });
-
-      renderRows(rows);
-      kauflandProductsById = new Map(rows.map((r) => [String(r.id), r]));
+      showMsg("Načítám stránku 1…", "info");
+      await renderPage(inventoryId);
       tableWrap.classList.remove("hidden");
-      showMsg("Načteno " + rows.length + " produktů.", "success");
+
+      showMsg("Načteno " + allProductIds.length + " produktů. Zobrazuji stránku 1.", "success");
     } catch (error) {
       showMsg("Chyba: " + (error.message || String(error)), "error");
     } finally {
-      btnLoad.disabled = false;
+      isLoadingProducts = false;
+      refreshBaseLinkerUi();
+      updatePaginationUi();
     }
   }
 
-  btnLoad.addEventListener("click", loadProducts);
+  btnLoad.addEventListener("click", function () {
+    loadProducts(PAGE_SIZE);
+  });
+
+  if (btnLoadAll) {
+    btnLoadAll.addEventListener("click", function () {
+      // Effectively "no limit" for fetchAllProductIds.
+      loadProducts(1000000000);
+    });
+  }
+
+  async function gotoPage(page) {
+    if (isLoadingProducts) return;
+    if (!allProductIds || !allProductIds.length) return;
+    if (page < 1 || page > totalPages) return;
+
+    const inventoryId = getInventoryId();
+    if (!inventoryId || Number.isNaN(inventoryId)) return;
+
+    isLoadingProducts = true;
+    if (btnLoad) btnLoad.disabled = true;
+    if (btnLoadAll) btnLoadAll.disabled = true;
+    if (btnPrevPage) btnPrevPage.disabled = true;
+    if (btnNextPage) btnNextPage.disabled = true;
+
+    try {
+      currentPage = page;
+      showMsg("Načítám stránku " + currentPage + "…", "info");
+      await renderPage(inventoryId);
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      showMsg("Chyba při stránkování: " + msg, "error");
+    } finally {
+      isLoadingProducts = false;
+      refreshBaseLinkerUi();
+      updatePaginationUi();
+    }
+  }
+
+  if (btnPrevPage) {
+    btnPrevPage.addEventListener("click", function () {
+      gotoPage(currentPage - 1);
+    });
+  }
+  if (btnNextPage) {
+    btnNextPage.addEventListener("click", function () {
+      gotoPage(currentPage + 1);
+    });
+  }
 
   function escapePreText(text) {
     return String(text == null ? "" : text);
@@ -437,13 +551,281 @@
 
   if (tbody) {
     tbody.addEventListener("click", function (event) {
-      const btn = event.target && event.target.closest ? event.target.closest(".btnAiMatchCategory") : null;
-      if (!btn) return;
+      const aiBtn = event.target && event.target.closest ? event.target.closest(".btnAiMatchCategory") : null;
+      if (aiBtn) {
+        const productId = aiBtn.getAttribute("data-product-id");
+        const product = kauflandProductsById.get(String(productId));
+        aiMatchCategoryForProduct(product, aiBtn);
+        return;
+      }
 
-      const productId = btn.getAttribute("data-product-id");
-      const product = kauflandProductsById.get(String(productId));
-      aiMatchCategoryForProduct(product, btn);
+      const basBtn = event.target && event.target.closest ? event.target.closest(".btnPushEstimatedCategoryToBas") : null;
+      if (basBtn) {
+        const productId = basBtn.getAttribute("data-product-id");
+        const product = kauflandProductsById.get(String(productId));
+        pushEstimatedCategoryToBas(product, basBtn);
+      }
     });
+  }
+
+  const selectAllProductsEl = document.getElementById("selectAllProducts");
+  const extraFieldKeySelect = document.getElementById("extraFieldKey");
+  const btnAiEstimateSelected = document.getElementById("btnAiEstimateSelected");
+  const btnPushSelectedToBas = document.getElementById("btnPushSelectedToBas");
+
+  function getSelectedProductIds() {
+    if (!tbody) return [];
+    const checked = tbody.querySelectorAll('.productRowCheck:checked');
+    return Array.from(checked).map((cb) => cb.getAttribute("data-product-id")).filter(Boolean);
+  }
+
+  function getSelectedProducts() {
+    const ids = getSelectedProductIds();
+    return ids.map((id) => kauflandProductsById.get(String(id))).filter(Boolean);
+  }
+
+  function getExtraFieldKey() {
+    // Value is like "extra_field_10902"
+    const v = extraFieldKeySelect && extraFieldKeySelect.value ? extraFieldKeySelect.value : "extra_field_10902";
+    return String(v).trim();
+  }
+
+  function updateSelectAllState() {
+    if (!selectAllProductsEl) return;
+    if (!tbody) return;
+    const checks = tbody.querySelectorAll(".productRowCheck");
+    const checked = tbody.querySelectorAll(".productRowCheck:checked");
+    if (!checks.length) {
+      selectAllProductsEl.checked = false;
+      selectAllProductsEl.indeterminate = false;
+      return;
+    }
+    selectAllProductsEl.checked = checked.length > 0 && checked.length === checks.length;
+    selectAllProductsEl.indeterminate = checked.length > 0 && checked.length < checks.length;
+  }
+
+  if (selectAllProductsEl) {
+    selectAllProductsEl.addEventListener("change", function () {
+      if (!tbody) return;
+      const all = tbody.querySelectorAll(".productRowCheck");
+      all.forEach((cb) => {
+        cb.checked = !!selectAllProductsEl.checked;
+      });
+      updateSelectAllState();
+      if (btnAiEstimateSelected) btnAiEstimateSelected.disabled = !getSelectedProductIds().length;
+      if (btnPushSelectedToBas) btnPushSelectedToBas.disabled = !getSelectedProductIds().length;
+    });
+  }
+
+  if (tbody) {
+    tbody.addEventListener("change", function (event) {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (!target.classList.contains("productRowCheck")) return;
+      updateSelectAllState();
+      if (btnAiEstimateSelected) btnAiEstimateSelected.disabled = !getSelectedProductIds().length;
+      if (btnPushSelectedToBas) btnPushSelectedToBas.disabled = !getSelectedProductIds().length;
+    });
+  }
+
+  if (btnAiEstimateSelected) {
+    btnAiEstimateSelected.addEventListener("click", async function () {
+      const selectedProducts = getSelectedProducts();
+      if (!selectedProducts.length) {
+        showMsg("Nevybrali jste žádné produkty.", "error");
+        return;
+      }
+      btnAiEstimateSelected.disabled = true;
+      if (btnPushSelectedToBas) btnPushSelectedToBas.disabled = true;
+      showMsg("AI odhad pro vybrané: začínám…", "info");
+
+      try {
+        let i = 0;
+        for (const product of selectedProducts) {
+          i++;
+          showMsg("AI odhad: " + i + "/" + selectedProducts.length + " (produkt " + product.id + ")", "info");
+          const aiBtn = tbody ? tbody.querySelector('.btnAiMatchCategory[data-product-id="' + escapeHtml(String(product.id)) + '"]') : null;
+          await aiMatchCategoryForProduct(product, aiBtn);
+        }
+        showMsg("AI odhad pro vybrané dokončen.", "success");
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        showMsg("AI dávka: chyba: " + msg, "error");
+      } finally {
+        btnAiEstimateSelected.disabled = false;
+        if (btnPushSelectedToBas) btnPushSelectedToBas.disabled = !getSelectedProductIds().length;
+      }
+    });
+  }
+
+  async function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  if (btnPushSelectedToBas) {
+    btnPushSelectedToBas.addEventListener("click", async function () {
+      const selectedProducts = getSelectedProducts();
+      if (!selectedProducts.length) {
+        showMsg("Nevybrali jste žádné produkty.", "error");
+        return;
+      }
+
+      const extraFieldKey = getExtraFieldKey();
+      const productsWithEstimate = selectedProducts.filter((p) => p && p.estimatedCategoryId);
+      if (!productsWithEstimate.length) {
+        showMsg("Pro vybrané produkty chybí odhadnuté kategorie. Nejprve spusťte AI odhad.", "error");
+        return;
+      }
+
+      btnAiEstimateSelected && (btnAiEstimateSelected.disabled = true);
+      btnPushSelectedToBas.disabled = true;
+
+      try {
+        const inventoryId = getInventoryId();
+        const REQUEST_DELAY_MS = 650; // ~92 requestů/min, bezpečně pod 100/min
+
+        for (let i = 0; i < productsWithEstimate.length; i++) {
+          const p = productsWithEstimate[i];
+          const productIdNum = parseInt(String(p.id), 10);
+          if (Number.isNaN(productIdNum)) continue;
+
+          const catId = String(p.estimatedCategoryId).trim();
+          if (!catId) continue;
+
+          // Mark UI
+          if (tbody) {
+            const tr = tbody.querySelector('button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]')?.closest("tr");
+            const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
+            if (statusEl) statusEl.textContent = "Ukládám…";
+          }
+
+          showMsg("Ukládám do Base: " + (i + 1) + "/" + productsWithEstimate.length, "info");
+
+          // BaseLinker: addInventoryProduct per product (spolehlivé, protože setInventoryProductsData není dostupné)
+          await callBaseLinker("addInventoryProduct", {
+            inventory_id: parseInt(String(inventoryId), 10),
+            product_id: productIdNum,
+            text_fields: {
+              [extraFieldKey]: catId,
+            },
+          });
+
+          if (tbody) {
+            const btn = tbody
+              ? tbody.querySelector('button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]')
+              : null;
+            const tr = btn ? btn.closest("tr") : null;
+            const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
+            if (statusEl) statusEl.textContent = "Uloženo.";
+          }
+
+          // Rate limiting
+          if (i + 1 < productsWithEstimate.length) await sleep(REQUEST_DELAY_MS);
+        }
+
+        showMsg("Uložení do Base dokončeno.", "success");
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        showMsg("Uložení do Base: chyba: " + msg, "error");
+      } finally {
+        btnAiEstimateSelected && (btnAiEstimateSelected.disabled = false);
+        btnPushSelectedToBas.disabled = !getSelectedProductIds().length;
+      }
+    });
+  }
+
+  async function pushEstimatedCategoryToBas(product, btnEl) {
+    if (!product) return;
+    if (!getToken()) {
+      showMsg("Nejdřív se přihlas do BaseLinkeru.", "error");
+      return;
+    }
+
+    const estimatedCategoryId = product.estimatedCategoryId ? String(product.estimatedCategoryId).trim() : "";
+    const extraFieldKey = getExtraFieldKey();
+    if (!estimatedCategoryId) {
+      showMsg("Nejdřív spusť AI odhad kategorie pro tento produkt.", "error");
+      return;
+    }
+
+    const tr = btnEl ? btnEl.closest("tr") : null;
+    const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
+    if (btnEl) btnEl.disabled = true;
+    if (statusEl) statusEl.textContent = "Ukládám do BASu...";
+
+    try {
+      const inventoryId = getInventoryId();
+      const productIdNum = parseInt(String(product.id), 10);
+      if (Number.isNaN(productIdNum)) {
+        throw new Error("Neplatné ID produktu: " + String(product.id));
+      }
+
+      let lastError = null;
+      const methodAttempts = [
+        // 1) Ověřený způsob z appKaufCIsteni.js (update konkrétního produktu přes addInventoryProduct + text_fields)
+        {
+          method: "addInventoryProduct",
+          parameters: {
+            inventory_id: parseInt(String(inventoryId), 10),
+            product_id: productIdNum,
+            text_fields: {
+              [extraFieldKey]: estimatedCategoryId,
+            },
+          },
+        },
+        // 2) Fallback přes setInventoryProductsData
+        {
+          method: "setInventoryProductsData",
+          parameters: {
+            inventory_id: inventoryId,
+            products: {
+              [String(productIdNum)]: {
+                extra_fields: {
+                  [extraFieldKey]: estimatedCategoryId,
+                },
+              },
+            },
+          },
+        },
+        // 3) Fallback přes setInventoryProductData
+        {
+          method: "setInventoryProductData",
+          parameters: {
+            inventory_id: inventoryId,
+            product_id: productIdNum,
+            data: {
+              extra_fields: {
+                  [extraFieldKey]: estimatedCategoryId,
+              },
+            },
+          },
+        },
+      ];
+
+      let ok = false;
+      for (const attempt of methodAttempts) {
+        try {
+          await callBaseLinker(attempt.method, attempt.parameters);
+          ok = true;
+          break;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      if (!ok) {
+        throw lastError || new Error("Nepodařilo se uložit kategorii do BASu.");
+      }
+
+      if (statusEl) statusEl.textContent = "Uloženo.";
+      showMsg("Kategorie " + estimatedCategoryId + " byla uložena do " + extraFieldKey + ".", "success");
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error);
+      if (statusEl) statusEl.textContent = "Chyba.";
+      showMsg("Chyba při ukládání do BASu: " + msg, "error");
+    } finally {
+      if (btnEl) btnEl.disabled = false;
+    }
   }
 
   function normalizeText(text) {
@@ -597,6 +979,8 @@
         }
       }
       if (resultIdEl) resultIdEl.textContent = chosenId || "—";
+      product.estimatedCategoryId = chosenId || "";
+      product.estimatedCategoryPath = chosenPath || "";
     } catch (error) {
       const msg = error && error.message ? error.message : String(error);
       showMsg("AI chyba: " + msg, "error");
@@ -1199,6 +1583,11 @@
   function refreshBaseLinkerUi() {
     const tokenPresent = !!(sessionStorage.getItem(TOKEN_STORAGE) || "").trim();
     if (btnLoad) btnLoad.disabled = !tokenPresent;
+    if (btnLoadAll) btnLoadAll.disabled = !tokenPresent;
+    if (!tokenPresent) {
+      if (btnPrevPage) btnPrevPage.disabled = true;
+      if (btnNextPage) btnNextPage.disabled = true;
+    }
     if (baseLinkerStatus) {
       baseLinkerStatus.textContent = tokenPresent ? "Přihlášen." : "Nejste přihlášen.";
     }
