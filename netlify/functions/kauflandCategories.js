@@ -84,8 +84,11 @@ function pickCategoryData(responseJson) {
   return responseJson;
 }
 
-async function getCategoryById({ categoryId, storefront, clientKey, secretKey }) {
-  const url = `${KAUFLAND_BASE_URL}/categories/${encodeURIComponent(String(categoryId))}/?storefront=${encodeURIComponent(storefront)}`;
+async function getCategoryById({ categoryId, storefront, locale, clientKey, secretKey }) {
+  const url =
+    `${KAUFLAND_BASE_URL}/categories/${encodeURIComponent(String(categoryId))}/?storefront=${encodeURIComponent(
+      storefront
+    )}&locale=${encodeURIComponent(locale)}`;
   const res = await kauflandSignedFetchJson({
     url,
     method: "GET",
@@ -98,7 +101,7 @@ async function getCategoryById({ categoryId, storefront, clientKey, secretKey })
   return category;
 }
 
-async function getChildCategories({ parentId, storefront, clientKey, secretKey }) {
+async function getChildCategories({ parentId, storefront, locale, clientKey, secretKey }) {
   // Kaufland API validates `limit` and rejects values above 100.
   // We paginate to avoid losing progress due to a hard limit.
   const limit = 100;
@@ -106,7 +109,9 @@ async function getChildCategories({ parentId, storefront, clientKey, secretKey }
   const all = [];
 
   while (true) {
-    const url = `${KAUFLAND_BASE_URL}/categories/?id_parent=${encodeURIComponent(String(parentId))}&storefront=${encodeURIComponent(storefront)}&limit=${limit}&offset=${offset}`;
+    const url = `${KAUFLAND_BASE_URL}/categories/?id_parent=${encodeURIComponent(
+      String(parentId)
+    )}&storefront=${encodeURIComponent(storefront)}&locale=${encodeURIComponent(locale)}&limit=${limit}&offset=${offset}`;
     const res = await kauflandSignedFetchJson({
       url,
       method: "GET",
@@ -158,6 +163,7 @@ exports.handler = async (event) => {
   const clientKey = (body.clientKey || "").trim();
   const secretKey = (body.secretKey || "").trim();
   const storefront = (body.storefront || "de").trim();
+  const locale = (body.locale || "cs-CZ").trim();
   const requestedMaxNewItems =
     body.batchSize != null
       ? parseInt(String(body.batchSize), 10)
@@ -176,6 +182,130 @@ exports.handler = async (event) => {
   }
 
   try {
+    // Preferred approach: one-shot fetch of the whole category tree.
+    // On local `netlify dev` the BFS approach often hits the ~30s lambda-local timeout.
+    try {
+      const HARD_MAX_NEW_ITEMS = 200000;
+      // For the one-shot tree endpoint we don't want to artificially truncate based on UI "batch" size.
+      // We'll only cap to the same safety limit as the old BFS approach.
+      const treeMaxNewItems = HARD_MAX_NEW_ITEMS;
+
+      const treeUrl =
+        `${KAUFLAND_BASE_URL}/categories/tree?` +
+        `storefront=${encodeURIComponent(storefront)}` +
+        `&locale=${encodeURIComponent(locale)}`;
+
+      const treeRes = await kauflandSignedFetchJson({
+        url: treeUrl,
+        method: "GET",
+        body: "",
+        clientKey,
+        secretKey,
+      });
+
+      if (treeRes && treeRes.ok && treeRes.json) {
+        const treeJson = treeRes.json;
+        const rootCandidate =
+          treeJson && typeof treeJson === "object"
+            ? treeJson.data != null
+              ? treeJson.data
+              : treeJson.tree != null
+                ? treeJson.tree
+                : treeJson.categories != null
+                  ? treeJson.categories
+                  : treeJson
+            : treeJson;
+
+        const rootNodes = Array.isArray(rootCandidate) ? rootCandidate : [rootCandidate];
+
+        const items = [];
+        const visited = new Set();
+
+        const pickId = (node) => {
+          if (!node || typeof node !== "object") return null;
+          const raw = node.id_category != null ? node.id_category : node.id != null ? node.id : null;
+          if (raw == null) return null;
+          return String(raw);
+        };
+
+        const pickChildren = (node) => {
+          if (!node || typeof node !== "object") return [];
+          if (Array.isArray(node.children)) return node.children;
+          if (Array.isArray(node.subcategories)) return node.subcategories;
+          if (Array.isArray(node.child_categories)) return node.child_categories;
+
+          // Fallback: try to find the first array property that looks like categories.
+          const keys = Object.keys(node);
+          for (const k of keys) {
+            const v = node[k];
+            if (!Array.isArray(v) || v.length === 0) continue;
+            const looksLikeCategoryArray = v.every(
+              (x) => x && typeof x === "object" && (x.id_category != null || x.id != null)
+            );
+            if (looksLikeCategoryArray) return v;
+          }
+          return [];
+        };
+
+        const pickTitle = (node, idStr) => {
+          const chosen = chooseCategoryTitle(node);
+          if (chosen && typeof chosen === "string" && chosen.trim()) return chosen.trim();
+          const name = node && typeof node === "object" ? node.name : null;
+          if (typeof name === "string" && name.trim()) return name.trim();
+          return idStr;
+        };
+
+        const walk = (node, pathParts) => {
+          if (!node) return;
+          if (items.length >= treeMaxNewItems) return;
+
+          const idStr = pickId(node);
+          if (!idStr) return;
+          if (visited.has(idStr)) return;
+
+          const title = pickTitle(node, idStr);
+          const nextParts = pathParts.concat([title]);
+
+          items.push({
+            id: idStr,
+            path: nextParts.join("/"),
+            name: title,
+          });
+          visited.add(idStr);
+
+          const children = pickChildren(node);
+          for (const child of children) {
+            walk(child, nextParts);
+            if (items.length >= treeMaxNewItems) break;
+          }
+        };
+
+        for (const root of rootNodes) {
+          walk(root, []);
+          if (items.length >= treeMaxNewItems) break;
+        }
+
+        if (items.length) {
+          return {
+            statusCode: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              newItems: items,
+              truncated: treeMaxNewItems > 0 && items.length >= treeMaxNewItems,
+              state: null,
+            }),
+          };
+        }
+      }
+    } catch {
+      // Fallback to BFS below.
+    }
+
+    const MAX_DURATION_MS = 25000; // keep safely below local lambda-local timeout
+    const startedAt = Date.now();
+    const deadline = startedAt + MAX_DURATION_MS;
+    let timedOut = false;
+
     const HARD_MAX_NEW_ITEMS = 200000;
     const maxNewItems = Number.isNaN(requestedMaxNewItems)
       ? 100
@@ -187,7 +317,7 @@ exports.handler = async (event) => {
 
     if (!state) {
       const rootId = 1;
-      const rootCategory = await getCategoryById({ categoryId: rootId, storefront, clientKey, secretKey });
+      const rootCategory = await getCategoryById({ categoryId: rootId, storefront, locale, clientKey, secretKey });
       const rootTitle = chooseCategoryTitle(rootCategory) || String(rootId);
 
       visited = new Set([String(rootId)]);
@@ -210,15 +340,26 @@ exports.handler = async (event) => {
     }
 
     while (queue.length && newItems.length < maxNewItems) {
+      if (Date.now() >= deadline) {
+        timedOut = true;
+        break;
+      }
+
       const node = queue.shift();
       const nodeId = node.id;
 
       const children = await getChildCategories({
         parentId: nodeId,
         storefront,
+        locale,
         clientKey,
         secretKey,
       });
+
+      if (Date.now() >= deadline) {
+        timedOut = true;
+        break;
+      }
 
       for (const child of children) {
         const childIdRaw = child && child.id_category != null ? String(child.id_category) : "";
@@ -238,7 +379,14 @@ exports.handler = async (event) => {
         });
 
         if (newItems.length >= maxNewItems) break;
+
+        if (Date.now() >= deadline) {
+          timedOut = true;
+          break;
+        }
       }
+
+      if (timedOut) break;
     }
 
     return {
@@ -246,7 +394,7 @@ exports.handler = async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         newItems,
-        truncated: queue.length > 0,
+        truncated: timedOut || queue.length > 0,
         state: {
           queue,
           visited: Array.from(visited),

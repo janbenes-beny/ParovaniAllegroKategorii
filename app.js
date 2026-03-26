@@ -14,6 +14,9 @@
   const kauflandDecideTestModal = document.getElementById("kauflandDecideTestModal");
   const kauflandDecideTestOutput = document.getElementById("kauflandDecideTestOutput");
   const btnCloseKauflandDecideTestModal = document.getElementById("btnCloseKauflandDecideTestModal");
+  const aiApiKeyInput = document.getElementById("aiApiKey");
+  const aiProviderSelect = document.getElementById("aiProvider");
+  const aiModelSelect = document.getElementById("aiModel");
 
   const btnOpenBaseLinkerLogin = document.getElementById("btnOpenBaseLinkerLogin");
   const baseLinkerLoginModal = document.getElementById("baseLinkerLoginModal");
@@ -230,8 +233,10 @@
         '<td class="image-col"></td>' +
         '<td><div class="desc">' + escapeHtml(row.description || "—") + "</div></td>" +
         '<td>' +
-        '<button type="button" class="btnKauflandDecideTest" data-product-id="' + escapeHtml(row.id) + '">Test POST decide</button>' +
-        "</td>";
+        '<button type="button" class="btnAiMatchCategory" data-product-id="' + escapeHtml(row.id) + '">AI odhad kategorie</button>' +
+        '<div class="aiResult desc" style="margin-top: 6px;">—</div>' +
+        "</td>" +
+        '<td class="aiResultId">—</td>';
 
       const imageCell = tr.querySelector(".image-col");
       if (row.imageUrl) {
@@ -432,13 +437,174 @@
 
   if (tbody) {
     tbody.addEventListener("click", function (event) {
-      const btn = event.target && event.target.closest ? event.target.closest(".btnKauflandDecideTest") : null;
+      const btn = event.target && event.target.closest ? event.target.closest(".btnAiMatchCategory") : null;
       if (!btn) return;
 
       const productId = btn.getAttribute("data-product-id");
       const product = kauflandProductsById.get(String(productId));
-      testKauflandDecideCategoryForProduct(product, btn);
+      aiMatchCategoryForProduct(product, btn);
     });
+  }
+
+  function normalizeText(text) {
+    return String(text == null ? "" : text)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  function tokenize(text) {
+    const norm = normalizeText(text);
+    if (!norm) return [];
+    return norm
+      .split(" ")
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 2);
+  }
+
+  function makeTokenSet(tokens) {
+    return new Set(tokens);
+  }
+
+  function countTokenOverlap(setA, setB) {
+    if (!setA || !setB) return 0;
+    const small = setA.size <= setB.size ? setA : setB;
+    const large = small === setA ? setB : setA;
+    let count = 0;
+    for (const t of small) if (large.has(t)) count++;
+    return count;
+  }
+
+  function getKauflandCategoryDisplayPath(item) {
+    // Mirrors logic used in `renderKauflandCategoriesFromItems`.
+    if (!item || typeof item.path !== "string") return "";
+    const rel = item.path;
+    if (kauflandRootPath && rel === kauflandRootPath) return "Všechny kategorie";
+    if (kauflandRootPath && rel.startsWith(kauflandRootPath + "/")) {
+      return "Všechny kategorie/" + rel.slice((kauflandRootPath + "/").length);
+    }
+    return "Všechny kategorie/" + rel;
+  }
+
+  function getCategoryTokenSet(categoryId, displayPath, name) {
+    if (kauflandCategoryTokenCache.has(categoryId)) return kauflandCategoryTokenCache.get(categoryId);
+    const tokens = tokenize((displayPath || "") + " " + (name || ""));
+    const set = makeTokenSet(tokens);
+    kauflandCategoryTokenCache.set(categoryId, set);
+    return set;
+  }
+
+  function pickTopCandidatesForProduct(product, allCategories, topK) {
+    const productTokens = makeTokenSet(tokenize(product.heurekaCategoryName + " " + product.name + " " + product.description));
+
+    const scored = [];
+    for (const cat of allCategories) {
+      if (!cat || cat.id == null) continue;
+      const idStr = String(cat.id);
+      const displayPath = getKauflandCategoryDisplayPath(cat);
+      const tokenSet = getCategoryTokenSet(idStr, displayPath, cat.name);
+      const score = countTokenOverlap(productTokens, tokenSet);
+      if (score > 0) scored.push({ cat, idStr, displayPath, score });
+    }
+
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(a.displayPath).length - String(b.displayPath).length;
+    });
+
+    const picked = scored.slice(0, topK);
+    if (picked.length) {
+      return picked.map((x) => ({
+        id: x.idStr,
+        path: x.displayPath,
+        name: x.cat.name || x.displayPath,
+      }));
+    }
+
+    // Fallback if no token overlap.
+    return allCategories
+      .filter((c) => c && c.id != null)
+      .slice()
+      .sort((a, b) => getKauflandCategoryDisplayPath(a).length - getKauflandCategoryDisplayPath(b).length)
+      .slice(0, topK)
+      .map((c) => ({
+        id: String(c.id),
+        path: getKauflandCategoryDisplayPath(c),
+        name: c.name || getKauflandCategoryDisplayPath(c),
+      }));
+  }
+
+  async function aiMatchCategoryForProduct(product, btnEl) {
+    if (!product) return;
+    if (!kauflandLastItems || !kauflandLastItems.length) {
+      showMsg("Nejdřív načti strom kategorií Kaufland.", "error");
+      return;
+    }
+
+    const apiKey = getAiApiKey();
+    const provider = getAiProvider();
+    const model = getAiModel();
+    if (!apiKey) {
+      showMsg("Zadejte AI API key.", "error");
+      return;
+    }
+
+    const td = btnEl ? btnEl.closest("td") : null;
+    const tr = btnEl ? btnEl.closest("tr") : null;
+    const resultEl = td ? td.querySelector(".aiResult") : null;
+    const resultIdEl = tr ? tr.querySelector(".aiResultId") : null;
+    if (btnEl) btnEl.disabled = true;
+    if (resultEl) resultEl.textContent = "AI odhaduje...";
+    if (resultIdEl) resultIdEl.textContent = "…";
+
+    try {
+      const topK = 20;
+      const candidates = pickTopCandidatesForProduct(product, kauflandLastItems, topK);
+
+      const response = await fetch(apiUrl("aiMatchCategory"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          provider,
+          model,
+          product: {
+            heurekaCategoryName: product.heurekaCategoryName,
+            title: product.name,
+            description: product.description,
+          },
+          candidates,
+          inputMode: "text_only",
+        }),
+      });
+
+      if (!response.ok) {
+        const raw = await response.text();
+        throw new Error("HTTP " + response.status + ": " + raw.slice(0, 400));
+      }
+
+      const data = await response.json();
+      const chosenPath = data && data.categoryPath ? data.categoryPath : null;
+      const chosenId = data && data.categoryId ? String(data.categoryId) : null;
+
+      if (resultEl) {
+        if (chosenPath) {
+          resultEl.textContent = chosenPath;
+        } else {
+          resultEl.textContent = "—";
+        }
+      }
+      if (resultIdEl) resultIdEl.textContent = chosenId || "—";
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error);
+      showMsg("AI chyba: " + msg, "error");
+      if (resultEl) resultEl.textContent = "—";
+      if (resultIdEl) resultIdEl.textContent = "—";
+    } finally {
+      if (btnEl) btnEl.disabled = false;
+    }
   }
 
   const KAUFLAND_CLIENT_KEY_STORAGE = "kaufland_client_key_local";
@@ -449,7 +615,7 @@
   const kauflandLocaleInput = document.getElementById("kauflandLocale");
   const btnLoadKauflandCategories = document.getElementById("btnLoadKauflandCategories");
   const kauflandCategoriesOutput = document.getElementById("kauflandCategoriesOutput");
-  const kauflandMaxCategoriesInput = document.getElementById("kauflandMaxCategories");
+  const kauflandCategoriesCount = document.getElementById("kauflandCategoriesCount");
   const btnSaveKauflandTree = document.getElementById("btnSaveKauflandTree");
   const btnDownloadKauflandTree = document.getElementById("btnDownloadKauflandTree");
   const btnLoadSavedKauflandTree = document.getElementById("btnLoadSavedKauflandTree");
@@ -461,8 +627,88 @@
 
   const KAUFLAND_TREE_ITEMS_STORAGE_KEY = "kaufland_categories_tree_items_v1";
   let kauflandLastItems = [];
+  let kauflandRootPath = null;
+  let kauflandCategoryTokenCache = new Map();
   const BASELINKER_REQUEST_LIMIT_PER_MIN = 100;
   const BASELINKER_MIN_INTERVAL_MS = Math.ceil(60000 / BASELINKER_REQUEST_LIMIT_PER_MIN) + 50; // ~650ms
+
+  const AI_API_KEY_STORAGE = "ai_api_key_local";
+  const AI_PROVIDER_STORAGE = "ai_provider_local";
+  const AI_MODEL_STORAGE = "ai_model_local";
+
+  const OPENAI_MODELS = ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"];
+  const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"];
+
+  function getAiProvider() {
+    const fromSelect = aiProviderSelect ? aiProviderSelect.value : "";
+    const saved = sessionStorage.getItem(AI_PROVIDER_STORAGE) || "gemini";
+    const provider = String(fromSelect || saved).trim().toLowerCase();
+    return provider === "openai" ? "openai" : "gemini";
+  }
+
+  function getAiApiKey() {
+    const saved = sessionStorage.getItem(AI_API_KEY_STORAGE) || "";
+    const fromInput = aiApiKeyInput && aiApiKeyInput.value ? aiApiKeyInput.value : "";
+    return String(fromInput || saved).trim();
+  }
+
+  function getAiModelOptions(provider) {
+    return provider === "openai" ? OPENAI_MODELS : GEMINI_MODELS;
+  }
+
+  function renderAiModelOptions(provider, preferredModel) {
+    if (!aiModelSelect) return;
+    const options = getAiModelOptions(provider);
+    aiModelSelect.innerHTML = "";
+    options.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      aiModelSelect.appendChild(opt);
+    });
+
+    const selected = preferredModel && options.includes(preferredModel) ? preferredModel : options[0];
+    aiModelSelect.value = selected;
+    sessionStorage.setItem(AI_MODEL_STORAGE, selected);
+  }
+
+  function getAiModel() {
+    const provider = getAiProvider();
+    const options = getAiModelOptions(provider);
+    const fromSelect = aiModelSelect ? aiModelSelect.value : "";
+    if (fromSelect && options.includes(fromSelect)) return fromSelect;
+    const saved = sessionStorage.getItem(AI_MODEL_STORAGE) || "";
+    if (saved && options.includes(saved)) return saved;
+    return options[0];
+  }
+
+  if (aiApiKeyInput) {
+    const saved = sessionStorage.getItem(AI_API_KEY_STORAGE);
+    if (saved) aiApiKeyInput.value = saved;
+    aiApiKeyInput.addEventListener("change", function () {
+      sessionStorage.setItem(AI_API_KEY_STORAGE, aiApiKeyInput.value || "");
+    });
+  }
+
+  if (aiProviderSelect) {
+    const savedProvider = sessionStorage.getItem(AI_PROVIDER_STORAGE) || "gemini";
+    aiProviderSelect.value = savedProvider === "openai" ? "openai" : "gemini";
+    renderAiModelOptions(aiProviderSelect.value, sessionStorage.getItem(AI_MODEL_STORAGE) || "");
+
+    aiProviderSelect.addEventListener("change", function () {
+      const provider = aiProviderSelect.value === "openai" ? "openai" : "gemini";
+      sessionStorage.setItem(AI_PROVIDER_STORAGE, provider);
+      renderAiModelOptions(provider, "");
+    });
+  } else {
+    renderAiModelOptions("gemini", sessionStorage.getItem(AI_MODEL_STORAGE) || "");
+  }
+
+  if (aiModelSelect) {
+    aiModelSelect.addEventListener("change", function () {
+      sessionStorage.setItem(AI_MODEL_STORAGE, aiModelSelect.value || "");
+    });
+  }
 
   function getKauflandClientKey() {
     return (kauflandClientKeyInput && (kauflandClientKeyInput.value || "")).trim();
@@ -484,19 +730,14 @@
     return locale || "cs-CZ";
   }
 
-  function getKauflandMaxCategories() {
-    const raw = kauflandMaxCategoriesInput ? (kauflandMaxCategoriesInput.value || "") : "100";
-    const n = parseInt(String(raw).trim(), 10);
-    if (Number.isNaN(n) || n <= 0) return 100;
-    return n;
-  }
-
   function renderKauflandCategoriesFromItems(items) {
     if (!kauflandCategoriesOutput) return;
     const safeItems = Array.isArray(items) ? items : [];
 
     const rootItem = safeItems.find((x) => x && String(x.id) === "1");
     const rootPath = rootItem && typeof rootItem.path === "string" ? rootItem.path : null;
+    kauflandRootPath = rootPath;
+    kauflandCategoryTokenCache = new Map();
 
     const toFullPath = (item) => {
       if (!item || typeof item.path !== "string") return null;
@@ -531,6 +772,10 @@
 
     kauflandCategoriesOutput.textContent = lines.map((l) => `${l.fullPath} (ID: ${l.id})`).join("\n");
     kauflandCategoriesOutput.classList.remove("hidden");
+    if (kauflandCategoriesCount) {
+      kauflandCategoriesCount.textContent = "Celkem kategorií: " + lines.length;
+      kauflandCategoriesCount.classList.remove("hidden");
+    }
     kauflandLastItems = safeItems;
 
     const has = kauflandLastItems.length > 0;
@@ -630,6 +875,10 @@
     if (!kauflandCategoriesOutput) return;
     kauflandCategoriesOutput.textContent = "";
     kauflandCategoriesOutput.classList.add("hidden");
+    if (kauflandCategoriesCount) {
+      kauflandCategoriesCount.textContent = "Celkem kategorií: 0";
+      kauflandCategoriesCount.classList.add("hidden");
+    }
     kauflandLastItems = [];
 
     if (btnSaveKauflandTree) btnSaveKauflandTree.disabled = true;
@@ -644,7 +893,11 @@
     const clientKey = getKauflandClientKey();
     const secretKey = getKauflandSecretKey();
     const storefront = getKauflandStorefront();
-    const batchSize = getKauflandMaxCategories();
+    const locale = getKauflandLocale();
+    // UI už nemá "batch" pole, backend už primárně používá /categories/tree.
+    // Tahle hodnota zůstává jen pro případ, že by fallback padl na BFS.
+    let batchSize = 500;
+    let retryCount = 0;
 
     if (!clientKey) {
       showMsg("Zadejte Kaufland client key.", "error");
@@ -661,6 +914,10 @@
     showMsg("Načítám strom kategorií Kaufland...", "info");
     kauflandCategoriesOutput.classList.add("hidden");
     kauflandCategoriesOutput.textContent = "";
+    if (kauflandCategoriesCount) {
+      kauflandCategoriesCount.textContent = "Celkem kategorií: 0";
+      kauflandCategoriesCount.classList.add("hidden");
+    }
 
     try {
       let state = null;
@@ -686,42 +943,80 @@
       while (true) {
         showMsg("Načítám dávku kategorií (batch " + batchSize + ")...", "info");
 
-        const response = await fetch(apiUrl("kauflandCategories"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            clientKey: clientKey,
-            secretKey: secretKey,
-            storefront: storefront,
-            batchSize: batchSize,
-            state: state,
-          }),
-        });
+        try {
+          const response = await fetch(apiUrl("kauflandCategories"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientKey: clientKey,
+              secretKey: secretKey,
+              storefront: storefront,
+              locale: locale,
+              batchSize: batchSize,
+              state: state,
+            }),
+          });
 
-        if (!response.ok) {
-          const raw = await response.text();
-          throw new Error("HTTP " + response.status + ": " + raw.slice(0, 400));
+          if (!response.ok) {
+            const raw = await response.text();
+            const rawText = String(raw || "");
+            const timeoutLike = /TimeoutError|timed out|Task timed out/i.test(rawText);
+
+            if (timeoutLike && batchSize > 1 && retryCount < 5) {
+              retryCount++;
+              batchSize = Math.max(1, Math.floor(batchSize / 2));
+              showMsg(
+                "Timeout při načítání, snižuji batch na " + batchSize + " a zkouším znovu (" + retryCount + "/5).",
+                "info"
+              );
+              continue;
+            }
+
+            throw new Error("HTTP " + response.status + ": " + rawText.slice(0, 400));
+          }
+
+          const data = await response.json();
+          const newItems = Array.isArray(data.newItems) ? data.newItems : [];
+          state = data.state || null;
+
+          allItems = allItems.concat(newItems);
+          const rootItem = allItems.find((x) => x && String(x.id) === "1");
+          if (!rootPath && rootItem && typeof rootItem.path === "string") {
+            rootPath = rootItem.path;
+          }
+
+          // success: reset retry counters
+          retryCount = 0;
+
+          rebuildAndRender();
+
+          const truncated = !!data.truncated;
+          showMsg(
+            "Načteno " + allItems.length + " kategorií (Kaufland)." + (truncated ? " Pokračuju..." : ""),
+            "success"
+          );
+
+          if (!truncated) break;
+
+          // Small delay between batches to reduce UI pressure.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        } catch (error) {
+          const msg = error && error.message ? error.message : String(error);
+          const timeoutLike = /TimeoutError|timed out|Task timed out/i.test(msg);
+
+          if (timeoutLike && batchSize > 1 && retryCount < 5) {
+            retryCount++;
+            batchSize = Math.max(1, Math.floor(batchSize / 2));
+            showMsg(
+              "Timeout při načítání, snižuji batch na " + batchSize + " a zkouším znovu (" + retryCount + "/5).",
+              "info"
+            );
+            continue;
+          }
+
+          showMsg("Stažení kategorií se zastavilo: " + msg, "error");
+          break;
         }
-
-        const data = await response.json();
-        const newItems = Array.isArray(data.newItems) ? data.newItems : [];
-        state = data.state || null;
-
-        allItems = allItems.concat(newItems);
-        const rootItem = allItems.find((x) => x && String(x.id) === "1");
-        if (!rootPath && rootItem && typeof rootItem.path === "string") {
-          rootPath = rootItem.path;
-        }
-
-        rebuildAndRender();
-
-        const truncated = !!data.truncated;
-        showMsg("Načteno " + allItems.length + " kategorií (Kaufland)." + (truncated ? " Pokračuju..." : ""), "success");
-
-        if (!truncated) break;
-
-        // Small delay between batches to reduce UI pressure and avoid very fast retries.
-        await new Promise((resolve) => setTimeout(resolve, 250));
       }
     } catch (error) {
       showMsg("Chyba: " + (error.message || String(error)), "error");

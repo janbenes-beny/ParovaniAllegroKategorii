@@ -4,9 +4,9 @@
 
 body {
   margin: 0;
-  font-family: Arial, sans-serif;
-  background: #f5f6f8;
-  color: #222;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  background: linear-gradient(180deg, #f6f8ff 0%, #eef2ff 100%);
+  color: #1f2937;
 }
 
 .container {
@@ -25,11 +25,58 @@ h1 {
 }
 
 .card {
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
   padding: 16px;
   margin-bottom: 16px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.collapsible-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.collapsible-card > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 700;
+  user-select: none;
+  background: linear-gradient(90deg, #f8faff 0%, #f1f5ff 100%);
+  border-bottom: 1px solid #eef2ff;
+  position: relative;
+  padding-right: 44px;
+}
+
+.collapsible-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-card > summary::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #475569;
+  border-bottom: 2px solid #475569;
+  transform: translateY(-60%) rotate(45deg);
+  transition: transform 0.2s ease;
+}
+
+.collapsible-card[open] > summary::after {
+  transform: translateY(-40%) rotate(225deg);
+}
+
+.collapsible-content {
+  padding: 0 16px 16px;
 }
 
 label {
@@ -38,12 +85,22 @@ label {
   margin-bottom: 6px;
 }
 
-input {
+input,
+select {
   width: 100%;
   padding: 10px;
   margin-bottom: 12px;
-  border: 1px solid #cfd3da;
+  border: 1px solid #d1d5db;
   border-radius: 8px;
+  background: #fff;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
 }
 
 .row {
@@ -52,11 +109,13 @@ input {
 
 button {
   border: 0;
-  background: #155eef;
+  background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
   color: #fff;
   padding: 10px 14px;
   border-radius: 8px;
   cursor: pointer;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.24);
 }
 
 button:disabled {
