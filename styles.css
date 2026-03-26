@@ -191,6 +191,7 @@ table {
 #tableWrap {
   padding: 0;
   overflow-x: auto;
+  padding-bottom: 10px;
 }
 
 .batchControls {
@@ -213,16 +214,19 @@ td {
   text-align: left;
   /* Allow normal word wrapping (no per-character breaks in narrow columns). */
   word-break: normal;
-  overflow: visible;
+  overflow: hidden;
   white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 th {
   background: linear-gradient(180deg, #f7f9ff 0%, #eef2ff 100%);
   color: #374151;
   font-size: 12px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.2;
 }
 
 tr:nth-child(even) td {
@@ -240,7 +244,7 @@ td {
   width: 90px;
   max-width: 90px;
   white-space: normal;
-  overflow: visible;
+  overflow: hidden;
   text-overflow: clip;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -316,4 +320,55 @@ pre.desc {
 
 .basSyncStatus {
   max-width: 160px;
+}
+
+.paginationControls {
+  margin-top: 8px;
+}
+
+.paginationPager {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  column-gap: 10px;
+  align-items: center;
+  justify-items: center;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.paginationPages {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.paginationPager #paginationInfo {
+  text-align: center;
+  padding-top: 2px; /* optické vycentrování vůči tlačítkům */
+}
+
+.paginationPager button {
+  width: 44px;
+  min-width: 44px;
+  padding: 10px 0;
+}
+
+.paginationPages button {
+  padding: 10px 14px;
+  border-radius: 999px;
+  min-width: 44px;
+  box-shadow: 0 10px 22px rgba(79, 70, 229, 0.25);
+}
+
+.paginationPages button.pageCurrent {
+  filter: saturate(1.1);
+}
+
+.paginationEllipsis {
+  padding: 0 4px;
+  color: #6b7280;
+  font-weight: 700;
 }

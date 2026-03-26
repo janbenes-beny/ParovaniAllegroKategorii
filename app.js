@@ -28,7 +28,7 @@
   const paginationControls = document.getElementById("paginationControls");
   const btnPrevPage = document.getElementById("btnPrevPage");
   const btnNextPage = document.getElementById("btnNextPage");
-  const pageInfoEl = document.getElementById("pageInfo");
+  const paginationInfoEl = document.getElementById("paginationInfo");
 
   function showLoginMsg(text, type) {
     if (!loginMsgEl) return;
@@ -233,11 +233,14 @@
   let isLoadingProducts = false;
 
   function updatePaginationUi() {
-    if (!paginationControls || !btnPrevPage || !btnNextPage || !pageInfoEl) return;
-    pageInfoEl.textContent = "Stránka " + currentPage + "/" + totalPages;
+    if (!paginationControls || !btnPrevPage || !btnNextPage || !paginationInfoEl) return;
+
     btnPrevPage.disabled = currentPage <= 1;
     btnNextPage.disabled = currentPage >= totalPages;
     paginationControls.style.display = totalPages > 1 ? "block" : "none";
+
+    const total = allProductIds ? allProductIds.length : 0;
+    paginationInfoEl.textContent = "Stránka " + currentPage + " z " + totalPages + " (celkem " + total + " produktů)";
   }
 
   function resetSelectionUi() {
