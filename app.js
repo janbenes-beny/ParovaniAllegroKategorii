@@ -709,46 +709,66 @@
 
       try {
         const inventoryId = getInventoryId();
-        const REQUEST_DELAY_MS = 650; // ~92 requestů/min, bezpečně pod 100/min
+        const CONCURRENCY = 4;
+        const REQUEST_DELAY_MS = 650; // ~92 requestů/min (při sekvenčním běhu)
+        // Abychom přibližně drželi stejnou globální rychlost i při 4 paralelních requestech.
+        const PER_WORKER_DELAY_MS = REQUEST_DELAY_MS * CONCURRENCY;
 
-        for (let i = 0; i < productsToSave.length; i++) {
-          const p = productsToSave[i];
-          const productIdNum = parseInt(String(p.id), 10);
-          if (Number.isNaN(productIdNum)) continue;
+        let completed = 0;
+        let nextIndex = 0;
 
-          const catId = String(p.estimatedCategoryId).trim();
-          if (!catId) continue;
+        async function worker() {
+          while (true) {
+            const i = nextIndex++;
+            if (i >= productsToSave.length) return;
 
-          // Mark UI
-          if (tbody) {
-            const tr = tbody.querySelector('button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]')?.closest("tr");
-            const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
-            if (statusEl) statusEl.textContent = "Ukládám…";
+            const p = productsToSave[i];
+            const productIdNum = parseInt(String(p.id), 10);
+            if (Number.isNaN(productIdNum)) continue;
+
+            const catId = String(p.estimatedCategoryId).trim();
+            if (!catId) continue;
+
+            // Mark UI
+            if (tbody) {
+              const tr = tbody
+                .querySelector(
+                  'button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]'
+                )
+                ?.closest("tr");
+              const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
+              if (statusEl) statusEl.textContent = "Ukládám…";
+            }
+
+            // BaseLinker: addInventoryProduct per product (spolehlivé, protože setInventoryProductsData není dostupné)
+            await callBaseLinker("addInventoryProduct", {
+              inventory_id: parseInt(String(inventoryId), 10),
+              product_id: productIdNum,
+              text_fields: {
+                [extraFieldKey]: catId,
+              },
+            });
+
+            if (tbody) {
+              const btn = tbody
+                ? tbody.querySelector(
+                    'button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]'
+                  )
+                : null;
+              const tr = btn ? btn.closest("tr") : null;
+              const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
+              if (statusEl) statusEl.textContent = "Uloženo.";
+            }
+
+            completed++;
+            showMsg("Ukládám do Base: " + completed + "/" + productsToSave.length, "info");
+
+            // Rate limiting (globálně přibližně jako sekvenční běh)
+            if (nextIndex < productsToSave.length) await sleep(PER_WORKER_DELAY_MS);
           }
-
-          showMsg("Ukládám do Base: " + (i + 1) + "/" + productsToSave.length, "info");
-
-          // BaseLinker: addInventoryProduct per product (spolehlivé, protože setInventoryProductsData není dostupné)
-          await callBaseLinker("addInventoryProduct", {
-            inventory_id: parseInt(String(inventoryId), 10),
-            product_id: productIdNum,
-            text_fields: {
-              [extraFieldKey]: catId,
-            },
-          });
-
-          if (tbody) {
-            const btn = tbody
-              ? tbody.querySelector('button.btnPushEstimatedCategoryToBas[data-product-id="' + escapeHtml(String(p.id)) + '"]')
-              : null;
-            const tr = btn ? btn.closest("tr") : null;
-            const statusEl = tr ? tr.querySelector(".basSyncStatus") : null;
-            if (statusEl) statusEl.textContent = "Uloženo.";
-          }
-
-          // Rate limiting
-          if (i + 1 < productsToSave.length) await sleep(REQUEST_DELAY_MS);
         }
+
+        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
 
         showMsg("Uložení do Base dokončeno.", "success");
       } catch (e) {
@@ -2047,6 +2067,30 @@
 
   // Restore BaseLinker login state (token lives in sessionStorage).
   if (inventoryInput) inventoryInput.value = String(BASELINKER_INVENTORY_ID);
+
+  // Optionally clear saved Kaufland keys after the first successful login in this browser session.
+  // This prevents auto-filling the keys after an earlier login, but keeps the cleared state on refresh.
+  const LOGIN_JUST_HAPPENED_FLAG = "bl_login_just_happened";
+  const KAUNFLAND_KEYS_CLEARED_FLAG = "kaufland_keys_cleared_after_first_login";
+  try {
+    const justLoggedIn = sessionStorage.getItem(LOGIN_JUST_HAPPENED_FLAG) === "1";
+    const clearedAlready = sessionStorage.getItem(KAUNFLAND_KEYS_CLEARED_FLAG) === "1";
+
+    if (justLoggedIn && !clearedAlready) {
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(KAUFLAND_CLIENT_KEY_STORAGE);
+        localStorage.removeItem(KAUFLAND_SECRET_KEY_STORAGE);
+      }
+      if (kauflandClientKeyInput) kauflandClientKeyInput.value = "";
+      if (kauflandSecretKeyInput) kauflandSecretKeyInput.value = "";
+      sessionStorage.setItem(KAUNFLAND_KEYS_CLEARED_FLAG, "1");
+    }
+
+    // Consume the flag so it doesn't run again on the next refresh.
+    sessionStorage.removeItem(LOGIN_JUST_HAPPENED_FLAG);
+  } catch {
+    // ignore (storage access, privacy mode, etc.)
+  }
 
   if (kauflandClientKeyInput) {
     const savedKauflandClientKey = localStorage.getItem(KAUFLAND_CLIENT_KEY_STORAGE);

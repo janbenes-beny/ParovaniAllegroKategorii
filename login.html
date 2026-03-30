@@ -47,6 +47,9 @@
             }
 
             sessionStorage.setItem(TOKEN_STORAGE, token);
+            // Used by index.html to optionally clear saved marketplace keys
+            // after the first successful login (only once per browser session).
+            sessionStorage.setItem("bl_login_just_happened", "1");
             window.location.href = "index.html";
           });
         }
