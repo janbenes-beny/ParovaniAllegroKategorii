@@ -63,10 +63,21 @@ function buildUserPayload(product, candidates, inputMode) {
   };
 }
 
-function buildSystemPrompt() {
+function marketplaceLabel(marketplace) {
+  const mp = String(marketplace || "").trim().toLowerCase();
+  if (mp === "allegro" || mp === "allegro_cz" || mp === "allegroc z") return "Allegro CZ";
+  if (mp === "kaufland") return "Kaufland";
+  if (!mp) return "the selected marketplace";
+  return mp;
+}
+
+function buildSystemPrompt(marketplace) {
+  const label = marketplaceLabel(marketplace);
   return (
     "You are a helpful assistant that selects the best matching category from a provided candidate shortlist. " +
-    "Choose the single best Kaufland category for the product based on semantics of the Heureka category, product title, and product description. " +
+    "Choose the single best category for the product for marketplace: " +
+    label +
+    ". Use semantics of the Heureka category, product title, and product description. " +
     "Return ONLY a single-line valid JSON object exactly in this shape: " +
     "{\"categoryId\":\"<candidate_id>\",\"confidence\":0.0} " +
     "Keys must be exactly: categoryId and confidence (0..1). " +
@@ -261,7 +272,8 @@ exports.handler = async (event) => {
   }
 
   const userPayload = buildUserPayload(product, candidates, inputMode);
-  const systemPrompt = buildSystemPrompt();
+  const marketplaceRaw = String(body.marketplace || "kaufland").trim().toLowerCase();
+  const systemPrompt = buildSystemPrompt(marketplaceRaw);
   const prompt = JSON.stringify(userPayload);
   const candidateById = new Map();
   for (const c of candidates) {

@@ -643,13 +643,28 @@
       showMsg("AI odhad pro vybrané: začínám…", "info");
 
       try {
-        let i = 0;
-        for (const product of selectedProducts) {
-          i++;
-          showMsg("AI odhad: " + i + "/" + selectedProducts.length + " (produkt " + product.id + ")", "info");
-          const aiBtn = tbody ? tbody.querySelector('.btnAiMatchCategory[data-product-id="' + escapeHtml(String(product.id)) + '"]') : null;
-          await aiMatchCategoryForProduct(product, aiBtn);
+        let completed = 0;
+        const CONCURRENCY = 4;
+        let nextIndex = 0;
+
+        async function worker() {
+          while (true) {
+            const i = nextIndex++;
+            if (i >= selectedProducts.length) return;
+
+            const product = selectedProducts[i];
+            const aiBtn = tbody
+              ? tbody.querySelector('.btnAiMatchCategory[data-product-id="' + escapeHtml(String(product.id)) + '"]')
+              : null;
+
+            await aiMatchCategoryForProduct(product, aiBtn);
+
+            completed++;
+            showMsg("AI odhad: " + completed + "/" + selectedProducts.length, "info");
+          }
         }
+
+        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
         showMsg("AI odhad pro vybrané dokončen.", "success");
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -680,6 +695,15 @@
         return;
       }
 
+      const productsToSave = productsWithEstimate.filter((p) => String(p.estimatedExtraFieldKey || "").trim() === String(extraFieldKey).trim());
+      if (!productsToSave.length) {
+        showMsg(
+          "U vybraných produktů odhad neodpovídá zvolenému `extraFieldKey`. Spusťte AI odhad znovu.",
+          "error"
+        );
+        return;
+      }
+
       btnAiEstimateSelected && (btnAiEstimateSelected.disabled = true);
       btnPushSelectedToBas.disabled = true;
 
@@ -687,8 +711,8 @@
         const inventoryId = getInventoryId();
         const REQUEST_DELAY_MS = 650; // ~92 requestů/min, bezpečně pod 100/min
 
-        for (let i = 0; i < productsWithEstimate.length; i++) {
-          const p = productsWithEstimate[i];
+        for (let i = 0; i < productsToSave.length; i++) {
+          const p = productsToSave[i];
           const productIdNum = parseInt(String(p.id), 10);
           if (Number.isNaN(productIdNum)) continue;
 
@@ -702,7 +726,7 @@
             if (statusEl) statusEl.textContent = "Ukládám…";
           }
 
-          showMsg("Ukládám do Base: " + (i + 1) + "/" + productsWithEstimate.length, "info");
+          showMsg("Ukládám do Base: " + (i + 1) + "/" + productsToSave.length, "info");
 
           // BaseLinker: addInventoryProduct per product (spolehlivé, protože setInventoryProductsData není dostupné)
           await callBaseLinker("addInventoryProduct", {
@@ -723,7 +747,7 @@
           }
 
           // Rate limiting
-          if (i + 1 < productsWithEstimate.length) await sleep(REQUEST_DELAY_MS);
+          if (i + 1 < productsToSave.length) await sleep(REQUEST_DELAY_MS);
         }
 
         showMsg("Uložení do Base dokončeno.", "success");
@@ -746,8 +770,17 @@
 
     const estimatedCategoryId = product.estimatedCategoryId ? String(product.estimatedCategoryId).trim() : "";
     const extraFieldKey = getExtraFieldKey();
+    const estimatedExtraFieldKey = product.estimatedExtraFieldKey ? String(product.estimatedExtraFieldKey).trim() : "";
     if (!estimatedCategoryId) {
       showMsg("Nejdřív spusť AI odhad kategorie pro tento produkt.", "error");
+      return;
+    }
+
+    if (!estimatedExtraFieldKey || estimatedExtraFieldKey !== String(extraFieldKey).trim()) {
+      showMsg(
+        "Odhad tohoto produktu neodpovídá zvolenému `extraFieldKey`. Spusťte AI odhad znovu.",
+        "error"
+      );
       return;
     }
 
@@ -881,6 +914,20 @@
     return set;
   }
 
+  function getAllegroCategoryDisplayPath(item) {
+    if (!item || typeof item.path !== "string") return "";
+    const rel = item.path.trim();
+    return rel ? "Všechny kategorie/" + rel : "Všechny kategorie";
+  }
+
+  function getAllegroCategoryTokenSet(categoryId, displayPath, name) {
+    if (allegroCategoryTokenCache.has(categoryId)) return allegroCategoryTokenCache.get(categoryId);
+    const tokens = tokenize((displayPath || "") + " " + (name || ""));
+    const set = makeTokenSet(tokens);
+    allegroCategoryTokenCache.set(categoryId, set);
+    return set;
+  }
+
   function pickTopCandidatesForProduct(product, allCategories, topK) {
     const productTokens = makeTokenSet(tokenize(product.heurekaCategoryName + " " + product.name + " " + product.description));
 
@@ -921,20 +968,107 @@
       }));
   }
 
-  async function aiMatchCategoryForProduct(product, btnEl) {
-    if (!product) return;
-    if (!kauflandLastItems || !kauflandLastItems.length) {
-      showMsg("Nejdřív načti strom kategorií Kaufland.", "error");
-      return;
+  function pickTopCandidatesForProductAllegro(product, allCategories, topK) {
+    const productTokens = makeTokenSet(tokenize(product.heurekaCategoryName + " " + product.name + " " + product.description));
+
+    const scored = [];
+    for (const cat of allCategories) {
+      if (!cat || cat.id == null) continue;
+      const idStr = String(cat.id);
+      const displayPath = getAllegroCategoryDisplayPath(cat);
+      const tokenSet = getAllegroCategoryTokenSet(idStr, displayPath, cat.name);
+      const score = countTokenOverlap(productTokens, tokenSet);
+      if (score > 0) scored.push({ cat, idStr, displayPath, score });
     }
 
-    const apiKey = getAiApiKey();
-    const provider = getAiProvider();
-    const model = getAiModel();
-    if (!apiKey) {
-      showMsg("Zadejte AI API key.", "error");
-      return;
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(a.displayPath).length - String(b.displayPath).length;
+    });
+
+    const picked = scored.slice(0, topK);
+    if (picked.length) {
+      return picked.map((x) => ({
+        id: x.idStr,
+        path: x.displayPath,
+        name: x.cat.name || x.displayPath,
+      }));
     }
+
+    // Fallback if no token overlap.
+    return allCategories
+      .filter((c) => c && c.id != null)
+      .slice()
+      .sort((a, b) => getAllegroCategoryDisplayPath(a).length - getAllegroCategoryDisplayPath(b).length)
+      .slice(0, topK)
+      .map((c) => ({
+        id: String(c.id),
+        path: getAllegroCategoryDisplayPath(c),
+        name: c.name || getAllegroCategoryDisplayPath(c),
+      }));
+  }
+
+  const AI_ESTIMATE_CACHE_V1_PREFIX = "ai_estimate_cache_v1";
+
+  function getAiEstimateCacheKey(productId, extraFieldKey) {
+    return (
+      AI_ESTIMATE_CACHE_V1_PREFIX +
+      "|" +
+      String(extraFieldKey == null ? "" : extraFieldKey).trim() +
+      "|" +
+      String(productId == null ? "" : productId).trim()
+    );
+  }
+
+  function safeLocalStorageGet(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function safeLocalStorageSet(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // ignore storage quota / privacy errors
+    }
+  }
+
+  function readCachedAiEstimate(productId, extraFieldKey) {
+    const key = getAiEstimateCacheKey(productId, extraFieldKey);
+    const raw = safeLocalStorageGet(key);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const categoryId = parsed.categoryId != null ? String(parsed.categoryId).trim() : "";
+      if (!categoryId) return null;
+      const categoryPath = parsed.categoryPath != null ? String(parsed.categoryPath) : "";
+      return { categoryId, categoryPath };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeCachedAiEstimate(productId, extraFieldKey, estimate) {
+    const key = getAiEstimateCacheKey(productId, extraFieldKey);
+    if (!estimate || typeof estimate !== "object") return;
+    const categoryId = estimate.categoryId != null ? String(estimate.categoryId).trim() : "";
+    if (!categoryId) return;
+    const categoryPath = estimate.categoryPath != null ? String(estimate.categoryPath) : "";
+    safeLocalStorageSet(key, JSON.stringify({ categoryId, categoryPath }));
+  }
+
+  async function aiMatchCategoryForProduct(product, btnEl) {
+    if (!product) return;
+    const extraFieldKey = getExtraFieldKey();
+    const marketplace = String(extraFieldKey) === "extra_field_5755" ? "allegro" : "kaufland";
+    const topK = 20;
+
+    // Keep marketplace binding to prevent saving estimates for a different extraFieldKey.
+    product.estimatedExtraFieldKey = String(extraFieldKey).trim();
 
     const td = btnEl ? btnEl.closest("td") : null;
     const tr = btnEl ? btnEl.closest("tr") : null;
@@ -944,46 +1078,116 @@
     if (resultEl) resultEl.textContent = "AI odhaduje...";
     if (resultIdEl) resultIdEl.textContent = "…";
 
+    // Prevent stale estimates from a previous run from being saved.
+    product.estimatedCategoryId = "";
+    product.estimatedCategoryPath = "";
+
+    // If we already have an estimate for this (productId + extraFieldKey), reuse it.
+    const cached = readCachedAiEstimate(product.id, extraFieldKey);
+    if (cached) {
+      if (resultEl) resultEl.textContent = cached.categoryPath || "—";
+      if (resultIdEl) resultIdEl.textContent = cached.categoryId || "—";
+      product.estimatedCategoryId = cached.categoryId || "";
+      product.estimatedCategoryPath = cached.categoryPath || "";
+      if (btnEl) btnEl.disabled = false;
+      return;
+    }
+
+    const apiKey = getAiApiKey();
+    const provider = getAiProvider();
+    const model = getAiModel();
+    if (!apiKey) {
+      showMsg("Zadejte AI API key.", "error");
+      if (btnEl) btnEl.disabled = false;
+      return;
+    }
+
     try {
-      const topK = 20;
-      const candidates = pickTopCandidatesForProduct(product, kauflandLastItems, topK);
-
-      const response = await fetch(apiUrl("aiMatchCategory"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          apiKey,
-          provider,
-          model,
-          product: {
-            heurekaCategoryName: product.heurekaCategoryName,
-            title: product.name,
-            description: product.description,
-          },
-          candidates,
-          inputMode: "text_only",
-        }),
-      });
-
-      if (!response.ok) {
-        const raw = await response.text();
-        throw new Error("HTTP " + response.status + ": " + raw.slice(0, 400));
+      // Only build candidates/tree if we don't have cached answer.
+      let candidates = [];
+      if (marketplace === "allegro") {
+        if (!allegroLastItems || !allegroLastItems.length) {
+          showMsg("Nejdřív načti strom kategorií Allegro.", "error");
+          return;
+        }
+        candidates = pickTopCandidatesForProductAllegro(product, allegroLastItems, topK);
+      } else {
+        if (!kauflandLastItems || !kauflandLastItems.length) {
+          showMsg("Nejdřív načti strom kategorií Kaufland.", "error");
+          return;
+        }
+        candidates = pickTopCandidatesForProduct(product, kauflandLastItems, topK);
       }
 
-      const data = await response.json();
-      const chosenPath = data && data.categoryPath ? data.categoryPath : null;
-      const chosenId = data && data.categoryId ? String(data.categoryId) : null;
+      const MAX_AI_ATTEMPTS = 3;
+      let lastError = null;
 
-      if (resultEl) {
-        if (chosenPath) {
-          resultEl.textContent = chosenPath;
-        } else {
-          resultEl.textContent = "—";
+      for (let attempt = 1; attempt <= MAX_AI_ATTEMPTS; attempt++) {
+        try {
+          const response = await fetch(apiUrl("aiMatchCategory"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              apiKey,
+              provider,
+              model,
+              marketplace: marketplace,
+              product: {
+                heurekaCategoryName: product.heurekaCategoryName,
+                title: product.name,
+                description: product.description,
+              },
+              candidates,
+              inputMode: "text_only",
+            }),
+          });
+
+          if (!response.ok) {
+            const raw = await response.text();
+            const status = response.status;
+            const err = new Error("HTTP " + status + ": " + raw.slice(0, 400));
+            lastError = err;
+
+            // Retry on transient errors.
+            const retryable = status === 429 || status >= 500;
+            if (retryable && attempt < MAX_AI_ATTEMPTS) {
+              const backoff = 700 * Math.pow(2, attempt - 1);
+              await sleep(backoff + Math.floor(Math.random() * 250));
+              continue;
+            }
+            throw err;
+          }
+
+          const data = await response.json();
+          const chosenPath = data && data.categoryPath ? data.categoryPath : null;
+          const chosenId = data && data.categoryId ? String(data.categoryId) : null;
+
+          if (resultEl) {
+            if (chosenPath) resultEl.textContent = chosenPath;
+            else resultEl.textContent = "—";
+          }
+          if (resultIdEl) resultIdEl.textContent = chosenId || "—";
+
+          product.estimatedCategoryId = chosenId || "";
+          product.estimatedCategoryPath = chosenPath || "";
+
+          // Cache successful estimate to avoid re-calling the LLM.
+          if (chosenId) {
+            writeCachedAiEstimate(product.id, extraFieldKey, {
+              categoryId: chosenId,
+              categoryPath: chosenPath || "",
+            });
+          }
+
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt >= MAX_AI_ATTEMPTS) break;
+          // continue loop to retry (if retryable, it was already handled above)
         }
       }
-      if (resultIdEl) resultIdEl.textContent = chosenId || "—";
-      product.estimatedCategoryId = chosenId || "";
-      product.estimatedCategoryPath = chosenPath || "";
+
+      throw lastError || new Error("AI chyba: neznámá chyba");
     } catch (error) {
       const msg = error && error.message ? error.message : String(error);
       showMsg("AI chyba: " + msg, "error");
@@ -996,6 +1200,9 @@
 
   const KAUFLAND_CLIENT_KEY_STORAGE = "kaufland_client_key_local";
   const KAUFLAND_SECRET_KEY_STORAGE = "kaufland_secret_key_local";
+  const ALLEGRO_CLIENT_KEY_STORAGE = "allegro_client_key_local";
+  const ALLEGRO_SECRET_KEY_STORAGE = "allegro_secret_key_local";
+  const ALLEGRO_ACCEPT_LANGUAGE_STORAGE = "allegro_accept_language_local";
   const kauflandClientKeyInput = document.getElementById("kauflandClientKey");
   const kauflandSecretKeyInput = document.getElementById("kauflandSecretKey");
   const kauflandStorefrontInput = document.getElementById("kauflandStorefront");
@@ -1012,10 +1219,26 @@
   const btnAddCategoriesToBaseLinkerAll = document.getElementById("btnAddCategoriesToBaseLinkerAll");
   const baseLinkerAddLog = document.getElementById("baseLinkerAddLog");
 
+  const allegroClientKeyInput = document.getElementById("allegroClientKey");
+  const allegroSecretKeyInput = document.getElementById("allegroSecretKey");
+  const allegroAcceptLanguageSelect = document.getElementById("allegroAcceptLanguage");
+  const btnLoadAllegroCategories = document.getElementById("btnLoadAllegroCategories");
+  const allegroCategoriesOutput = document.getElementById("allegroCategoriesOutput");
+  const allegroCategoriesCount = document.getElementById("allegroCategoriesCount");
+  const btnSaveAllegroTree = document.getElementById("btnSaveAllegroTree");
+  const btnDownloadAllegroTree = document.getElementById("btnDownloadAllegroTree");
+  const btnLoadSavedAllegroTree = document.getElementById("btnLoadSavedAllegroTree");
+  const btnClearSavedAllegroTree = document.getElementById("btnClearSavedAllegroTree");
+
   const KAUFLAND_TREE_ITEMS_STORAGE_KEY = "kaufland_categories_tree_items_v1";
   let kauflandLastItems = [];
   let kauflandRootPath = null;
   let kauflandCategoryTokenCache = new Map();
+
+  const ALLEGRO_TREE_ITEMS_STORAGE_KEY = "allegro_categories_tree_items_v1";
+  let allegroLastItems = [];
+  let allegroCategoryTokenCache = new Map();
+
   const BASELINKER_REQUEST_LIMIT_PER_MIN = 100;
   const BASELINKER_MIN_INTERVAL_MS = Math.ceil(60000 / BASELINKER_REQUEST_LIMIT_PER_MIN) + 50; // ~650ms
 
@@ -1117,6 +1340,20 @@
     return locale || "cs-CZ";
   }
 
+  function getAllegroClientKey() {
+    return (allegroClientKeyInput && (allegroClientKeyInput.value || "")).trim();
+  }
+
+  function getAllegroSecretKey() {
+    return (allegroSecretKeyInput && (allegroSecretKeyInput.value || "")).trim();
+  }
+
+  function getAllegroAcceptLanguage() {
+    const raw = allegroAcceptLanguageSelect ? (allegroAcceptLanguageSelect.value || "") : "cs-CZ";
+    const lang = String(raw).trim();
+    return lang || "cs-CZ";
+  }
+
   function renderKauflandCategoriesFromItems(items) {
     if (!kauflandCategoriesOutput) return;
     const safeItems = Array.isArray(items) ? items : [];
@@ -1170,6 +1407,51 @@
     if (btnDownloadKauflandTree) btnDownloadKauflandTree.disabled = !has;
 
     refreshBaseLinkerUi();
+  }
+
+  function renderAllegroCategoriesFromItems(items) {
+    if (!allegroCategoriesOutput) return;
+    const safeItems = Array.isArray(items) ? items : [];
+
+    const toFullPath = (item) => {
+      if (!item || typeof item.path !== "string") return null;
+      const rel = item.path.trim();
+      return rel ? "Všechny kategorie/" + rel : "Všechny kategorie";
+    };
+
+    const lines = [];
+    for (const it of safeItems) {
+      if (!it || it.id == null) continue;
+      const fullPath = toFullPath(it);
+      if (!fullPath || typeof fullPath !== "string" || !fullPath.trim()) continue;
+      lines.push({
+        fullPath,
+        id: String(it.id),
+      });
+    }
+
+    lines.sort((a, b) => {
+      if (a.fullPath === "Všechny kategorie") return -1;
+      if (b.fullPath === "Všechny kategorie") return 1;
+      const byPath = a.fullPath.localeCompare(b.fullPath, "cs");
+      if (byPath !== 0) return byPath;
+      return a.id.localeCompare(b.id, "cs");
+    });
+
+    allegroCategoriesOutput.textContent = lines.map((l) => `${l.fullPath} (ID: ${l.id})`).join("\n");
+    allegroCategoriesOutput.classList.remove("hidden");
+
+    if (allegroCategoriesCount) {
+      allegroCategoriesCount.textContent = "Celkem kategorií: " + lines.length;
+      allegroCategoriesCount.classList.remove("hidden");
+    }
+
+    allegroLastItems = safeItems;
+    allegroCategoryTokenCache = new Map();
+
+    const has = allegroLastItems.length > 0;
+    if (btnSaveAllegroTree) btnSaveAllegroTree.disabled = !has;
+    if (btnDownloadAllegroTree) btnDownloadAllegroTree.disabled = !has;
   }
 
   function getBaseLinkerCategoryNamesFromItems(items) {
@@ -1272,6 +1554,116 @@
     if (btnDownloadKauflandTree) btnDownloadKauflandTree.disabled = true;
 
     refreshBaseLinkerUi();
+  }
+
+  function clearAllegroCategoriesOutput() {
+    if (!allegroCategoriesOutput) return;
+    allegroCategoriesOutput.textContent = "";
+    allegroCategoriesOutput.classList.add("hidden");
+    if (allegroCategoriesCount) {
+      allegroCategoriesCount.textContent = "Celkem kategorií: 0";
+      allegroCategoriesCount.classList.add("hidden");
+    }
+    allegroLastItems = [];
+
+    if (btnSaveAllegroTree) btnSaveAllegroTree.disabled = true;
+    if (btnDownloadAllegroTree) btnDownloadAllegroTree.disabled = true;
+  }
+
+  async function loadAllegroCategoriesTree() {
+    if (!btnLoadAllegroCategories || !allegroCategoriesOutput) return;
+
+    const clientKey = getAllegroClientKey();
+    const secretKey = getAllegroSecretKey();
+    const acceptLanguage = getAllegroAcceptLanguage();
+
+    let retryCount = 0;
+
+    if (!clientKey) {
+      showMsg("Zadejte Allegro client key.", "error");
+      return;
+    }
+    if (!secretKey) {
+      showMsg("Zadejte Allegro secret key.", "error");
+      return;
+    }
+
+    btnLoadAllegroCategories.disabled = true;
+    if (btnSaveAllegroTree) btnSaveAllegroTree.disabled = true;
+    if (btnDownloadAllegroTree) btnDownloadAllegroTree.disabled = true;
+
+    showMsg("Načítám strom kategorií Allegro...", "info");
+    allegroCategoriesOutput.classList.add("hidden");
+    allegroCategoriesOutput.textContent = "";
+    if (allegroCategoriesCount) {
+      allegroCategoriesCount.textContent = "Celkem kategorií: 0";
+      allegroCategoriesCount.classList.add("hidden");
+    }
+
+    try {
+      let state = null;
+      let allItems = [];
+
+      while (true) {
+        showMsg("Načítám další dávku kategorií Allegro...", "info");
+
+        const response = await fetch(apiUrl("allegroCategories"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientKey: clientKey,
+            secretKey: secretKey,
+            acceptLanguage: acceptLanguage,
+            state: state,
+          }),
+        });
+
+        if (!response.ok) {
+          const raw = await response.text();
+          const rawText = String(raw || "");
+          const timeoutLike = /TimeoutError|timed out|Task timed out/i.test(rawText);
+          if (timeoutLike && retryCount < 5) {
+            retryCount++;
+            showMsg(
+              "Timeout při načítání Allegro, zkouším znovu (" + retryCount + "/5).",
+              "info"
+            );
+            continue;
+          }
+          throw new Error("HTTP " + response.status + ": " + rawText.slice(0, 400));
+        }
+
+        const data = await response.json();
+        const newItems = Array.isArray(data.newItems) ? data.newItems : [];
+        state = data.state || null;
+
+        allItems = allItems.concat(newItems);
+        renderAllegroCategoriesFromItems(allItems);
+
+        const truncated = !!data.truncated;
+        retryCount = 0;
+        showMsg(
+          "Načteno " + allItems.length + " kategorií (Allegro)." + (truncated ? " Pokračuju..." : ""),
+          "success"
+        );
+
+        if (!truncated) break;
+
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
+      // Cache the completed tree in localStorage so a refresh doesn't require re-downloading.
+      try {
+        localStorage.setItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY, JSON.stringify(allItems));
+      } catch {
+        // ignore storage quota issues
+      }
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error);
+      showMsg("Chyba: " + msg, "error");
+    } finally {
+      btnLoadAllegroCategories.disabled = false;
+    }
   }
 
   async function loadKauflandCategoriesTree() {
@@ -1501,6 +1893,92 @@
     });
   }
 
+  if (btnLoadAllegroCategories) {
+    btnLoadAllegroCategories.addEventListener("click", loadAllegroCategoriesTree);
+  }
+
+  if (btnSaveAllegroTree) {
+    btnSaveAllegroTree.addEventListener("click", function () {
+      try {
+        if (!allegroLastItems || !allegroLastItems.length) {
+          showMsg("Není co uložit (strom nebyl načten).", "error");
+          return;
+        }
+        localStorage.setItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY, JSON.stringify(allegroLastItems));
+        showMsg("Strom kategorií Allegro uložen do prohlížeče.", "success");
+      } catch (e) {
+        showMsg("Chyba při ukládání: " + (e && e.message ? e.message : String(e)), "error");
+      }
+    });
+  }
+
+  if (btnDownloadAllegroTree) {
+    btnDownloadAllegroTree.addEventListener("click", function () {
+      try {
+        const items =
+          allegroLastItems && allegroLastItems.length
+            ? allegroLastItems
+            : (() => {
+                const raw = localStorage.getItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY);
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed) ? parsed : [];
+              })();
+
+        if (!items.length) {
+          showMsg("Nic ke stažení (strom nebyl načten ani uložen).", "error");
+          return;
+        }
+
+        const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "allegro-categories-tree.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        showMsg("Chyba při stahování: " + (e && e.message ? e.message : String(e)), "error");
+      }
+    });
+  }
+
+  if (btnLoadSavedAllegroTree) {
+    btnLoadSavedAllegroTree.addEventListener("click", function () {
+      try {
+        const raw = localStorage.getItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY);
+        if (!raw) {
+          showMsg("V prohlížeči není uložený strom kategorií Allegro.", "error");
+          return;
+        }
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed) || !parsed.length) {
+          showMsg("Uložený strom Allegro je prázdný.", "error");
+          return;
+        }
+        renderAllegroCategoriesFromItems(parsed);
+        showMsg("Načteno uložených kategorií Allegro: " + parsed.length + ".", "success");
+      } catch (e) {
+        showMsg("Chyba při načítání uloženého stromu Allegro: " + (e && e.message ? e.message : String(e)), "error");
+      }
+    });
+  }
+
+  if (btnClearSavedAllegroTree) {
+    btnClearSavedAllegroTree.addEventListener("click", function () {
+      try {
+        localStorage.removeItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY);
+        clearAllegroCategoriesOutput();
+        clearBaseLinkerAddLog();
+        showMsg("Uložený strom Allegro byl vymazán.", "success");
+      } catch (e) {
+        showMsg("Chyba při mazání: " + (e && e.message ? e.message : String(e)), "error");
+      }
+    });
+  }
+
   if (btnAddCategoriesToBaseLinkerTest) {
     btnAddCategoriesToBaseLinkerTest.addEventListener("click", async function () {
       try {
@@ -1555,6 +2033,18 @@
     // ignore localStorage issues
   }
 
+  try {
+    const raw = localStorage.getItem(ALLEGRO_TREE_ITEMS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) {
+        renderAllegroCategoriesFromItems(parsed);
+      }
+    }
+  } catch {
+    // ignore localStorage issues
+  }
+
   // Restore BaseLinker login state (token lives in sessionStorage).
   if (inventoryInput) inventoryInput.value = String(BASELINKER_INVENTORY_ID);
 
@@ -1573,6 +2063,33 @@
 
     kauflandSecretKeyInput.addEventListener("change", function () {
       localStorage.setItem(KAUFLAND_SECRET_KEY_STORAGE, kauflandSecretKeyInput.value || "");
+    });
+  }
+
+  if (allegroClientKeyInput) {
+    const savedAllegroClientKey = localStorage.getItem(ALLEGRO_CLIENT_KEY_STORAGE);
+    if (savedAllegroClientKey) allegroClientKeyInput.value = savedAllegroClientKey;
+
+    allegroClientKeyInput.addEventListener("change", function () {
+      localStorage.setItem(ALLEGRO_CLIENT_KEY_STORAGE, allegroClientKeyInput.value || "");
+    });
+  }
+
+  if (allegroSecretKeyInput) {
+    const savedAllegroSecretKey = localStorage.getItem(ALLEGRO_SECRET_KEY_STORAGE);
+    if (savedAllegroSecretKey) allegroSecretKeyInput.value = savedAllegroSecretKey;
+
+    allegroSecretKeyInput.addEventListener("change", function () {
+      localStorage.setItem(ALLEGRO_SECRET_KEY_STORAGE, allegroSecretKeyInput.value || "");
+    });
+  }
+
+  if (allegroAcceptLanguageSelect) {
+    const savedAllegroAcceptLanguage = localStorage.getItem(ALLEGRO_ACCEPT_LANGUAGE_STORAGE);
+    if (savedAllegroAcceptLanguage) allegroAcceptLanguageSelect.value = savedAllegroAcceptLanguage;
+
+    allegroAcceptLanguageSelect.addEventListener("change", function () {
+      localStorage.setItem(ALLEGRO_ACCEPT_LANGUAGE_STORAGE, allegroAcceptLanguageSelect.value || "");
     });
   }
 

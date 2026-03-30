@@ -55,7 +55,7 @@
     <details class="card collapsible-card">
       <summary>
         <span>Marketplace stromy kategorií</span>
-        <span class="sub" style="margin: 0;">Kaufland teď, další marketplace později</span>
+        <span class="sub" style="margin: 0;">Načtení stromů z jednotlivých marketplaců</span>
       </summary>
 
       <div class="collapsible-content">
@@ -92,6 +92,34 @@
           <button id="btnClearSavedKauflandTree" type="button">Vymazat uložené</button>
         </div>
 
+        <h2 style="margin: 22px 0 8px;">Načtení stromu kategorií Allegro CZ</h2>
+        <p class="sub" style="margin-top: 0; margin-bottom: 14px;">
+          Zadejte `client key` a `secret key`. Aplikace stáhne kompletní strom kategorií (ID, celá cesta a koncový název) přes Allegro API.
+        </p>
+
+        <label for="allegroClientKey">Allegro Client Key</label>
+        <input id="allegroClientKey" type="password" placeholder="Váš client key" autocomplete="off" />
+
+        <label for="allegroSecretKey">Allegro Secret Key</label>
+        <input id="allegroSecretKey" type="password" placeholder="Váš secret key" autocomplete="off" />
+
+        <label for="allegroAcceptLanguage">Accept - Language</label>
+        <select id="allegroAcceptLanguage">
+          <option value="cs-CZ" selected>cs-CZ</option>
+        </select>
+
+        <button id="btnLoadAllegroCategories" type="button">Načíst strom kategorií</button>
+
+        <pre id="allegroCategoriesOutput" class="desc hidden"></pre>
+        <div id="allegroCategoriesCount" class="sub hidden">Celkem kategorií: 0</div>
+
+        <div class="row" style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px;">
+          <button id="btnSaveAllegroTree" type="button" disabled>Uložit strom</button>
+          <button id="btnDownloadAllegroTree" type="button" disabled>Stáhnout JSON</button>
+          <button id="btnLoadSavedAllegroTree" type="button">Načíst uložené</button>
+          <button id="btnClearSavedAllegroTree" type="button">Vymazat uložené</button>
+        </div>
+
         <pre id="baseLinkerAddLog" class="desc hidden" style="margin-top: 14px;"></pre>
       </div>
     </details>
@@ -99,9 +127,10 @@
     <section class="card hidden" id="tableWrap">
       <div id="batchControls" class="batchControls">
         <div class="row" style="margin-top: 0;">
-          <label for="extraFieldKey">Extra field pro zápis kategorie do Basu (zatím jen Kaufland)</label>
+          <label for="extraFieldKey">Extra field pro zápis kategorie do Basu</label>
           <select id="extraFieldKey">
             <option value="extra_field_10902" selected>Kaufland: extra_field_10902</option>
+            <option value="extra_field_5755">Allegro CZ: extra_field_5755</option>
           </select>
         </div>
 
@@ -123,8 +152,8 @@
             <th>Celý název Heureka kategorie</th>
             <th>Obrázek</th>
             <th>Popis</th>
-            <th>Kaufland odhad</th>
-            <th>ID odhadnuté Kaufland kategorie</th>
+            <th>Odhad</th>
+            <th>ID odhadnuté kategorie</th>
             <th>Akce Base</th>
           </tr>
         </thead>
